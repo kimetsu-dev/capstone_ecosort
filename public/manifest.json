@@ -1,0 +1,52 @@
+{
+  "short_name": "Ecosort",
+  "name": "Ecosort",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#10b981",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "images/logo.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/logo192.png", 
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "icons/logo512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "screenshots": [
+    {
+      "src": "images/screenshot1.png",
+      "sizes": "720x1598",
+      "type": "image/png",
+      "form_factor": "narrow",
+      "label": "Welcome Page"
+    },
+    {
+      "src": "images/screenshot2.png",
+      "sizes": "720x1504",
+      "type": "image/png",
+      "form_factor": "narrow",
+      "label": "Dashboard view"
+    },
+    {
+      "src": "images/screenshot_wide.png",
+      "sizes": "1337x621",
+      "type": "image/png",
+      "form_factor": "wide",
+      "label": "Dashboard View"
+    }
+  ]
+}
