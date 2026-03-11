@@ -6,7 +6,7 @@ import { collection, onSnapshot, query, where } from "firebase/firestore";
 import { db } from "../firebase";
 import { createPortal } from "react-dom";
 
-export function DashboardCalendar({ selectedDate, setSelectedDate, isDark, schedules }) {
+export function DashboardCalendar({ selectedDate, setSelectedDate, isDark, schedules, onOpenChange }) {
   const [showCalendar, setShowCalendar] = useState(false);
   const [collectionSchedules, setCollectionSchedules] = useState([]);
   const [submissionSchedules, setSubmissionSchedules] = useState([]);
@@ -97,7 +97,37 @@ export function DashboardCalendar({ selectedDate, setSelectedDate, isDark, sched
     };
   }, [showCalendar]);
 
-  const toggleCalendar = () => setShowCalendar((prev) => !prev);
+  const toggleCalendar = () => {
+    setShowCalendar((prev) => {
+      const next = !prev;
+      onOpenChange?.(next);
+      return next;
+    });
+  };
+
+  // Scroll lock — freeze body scroll while popup is open
+  useEffect(() => {
+    if (showCalendar) {
+      const scrollY = window.scrollY;
+      document.body.style.overflow = "hidden";
+      document.body.style.position = "fixed";
+      document.body.style.top = `-${scrollY}px`;
+      document.body.style.width = "100%";
+    } else {
+      const scrollY = parseInt(document.body.style.top || "0", 10);
+      document.body.style.overflow = "";
+      document.body.style.position = "";
+      document.body.style.top = "";
+      document.body.style.width = "";
+      window.scrollTo(0, -scrollY);
+    }
+    return () => {
+      document.body.style.overflow = "";
+      document.body.style.position = "";
+      document.body.style.top = "";
+      document.body.style.width = "";
+    };
+  }, [showCalendar]);
 
   const isScheduledForDate = (date, schedule) => {
     const dayName = date
@@ -203,16 +233,17 @@ export function DashboardCalendar({ selectedDate, setSelectedDate, isDark, sched
       <div className="relative inline-block">
         <button
           onClick={toggleCalendar}
-          className={`w-10 h-10 rounded-full flex items-center justify-center shadow-md transition-colors ${
-            isDark
-              ? "bg-emerald-600 hover:bg-emerald-700 text-white"
-              : "bg-emerald-500 hover:bg-emerald-600 text-white"
+          className={`flex flex-col items-center gap-0.5 px-3 py-2 rounded-xl shadow-md transition-all active:scale-95 ${
+            showCalendar
+              ? (isDark ? "bg-emerald-700 text-white" : "bg-emerald-600 text-white")
+              : (isDark ? "bg-emerald-600 hover:bg-emerald-700 text-white" : "bg-emerald-500 hover:bg-emerald-600 text-white")
           }`}
-          aria-label={
-            showCalendar ? "Close calendar popup" : "Open calendar popup"
-          }
+          aria-label={showCalendar ? "Close calendar popup" : "Open calendar popup"}
         >
-          <FiCalendar className="w-5 h-5" />
+          <FiCalendar className="w-4 h-4" />
+          <span className="text-[10px] font-semibold leading-none">
+            {showCalendar ? "Close" : "Open"}
+          </span>
         </button>
       </div>
 
@@ -323,7 +354,7 @@ export function DashboardCalendar({ selectedDate, setSelectedDate, isDark, sched
                             ? "Collection & Submission - Click for details"
                             : hasCollection
                             ? "Collection day - Click for details"
-                            : "Submission point open - Click for details"
+                            : "Submission day - Click for details"
                         }
                         aria-label="Schedule available, clickable"
                       >
@@ -389,7 +420,7 @@ export function DashboardCalendar({ selectedDate, setSelectedDate, isDark, sched
                                     : isDark ? "text-green-400" : "text-green-600"
                                 }`}
                               >
-                                {schedule.type === "collection" ? "Collection" : "Submission Point"}
+                                {schedule.type === "collection" ? "Collection" : "Submission Day"}
                               </span>
                             </div>
 
@@ -814,5 +845,257 @@ export function DashboardCalendar({ selectedDate, setSelectedDate, isDark, sched
 `}</style>
 
     </>
+  );
+}
+
+// ── Compact week-strip calendar ───────────────────────────────────────────────
+export function InlineCalendar({ selectedDate, setSelectedDate, isDark, schedules = [] }) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  // weekStart: Monday of the week containing `anchorDate`
+  const [anchorDate, setAnchorDate] = useState(() => {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    return d;
+  });
+
+  const [selectedDateSchedules, setSelectedDateSchedules] = useState([]);
+
+  // Helpers ─────────────────────────────────────────────────────────────────
+  const isSameDay = (a, b) =>
+    a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() &&
+    a.getDate() === b.getDate();
+
+  const startOfWeek = (date) => {
+    const d = new Date(date);
+    const day = d.getDay(); // 0 Sun … 6 Sat
+    const diff = day === 0 ? -6 : 1 - day; // shift to Monday
+    d.setDate(d.getDate() + diff);
+    d.setHours(0, 0, 0, 0);
+    return d;
+  };
+
+  const isScheduledForDate = (date, schedule) => {
+    const dayName = date.toLocaleDateString("en-US", { weekday: "long" }).toLowerCase();
+    if (schedule.day !== dayName) return false;
+    if (schedule.type === "submission") return true;
+    const weeksDiff = Math.floor((date.getTime() - today.getTime()) / (7 * 24 * 60 * 60 * 1000));
+    switch (schedule.frequency) {
+      case "weekly": return true;
+      case "biweekly": return Math.abs(weeksDiff) % 2 === 0;
+      case "monthly": {
+        const firstDayOfMonth = new Date(date.getFullYear(), date.getMonth(), 1);
+        const firstOccurrence = new Date(firstDayOfMonth);
+        const targetDay = ["sunday","monday","tuesday","wednesday","thursday","friday","saturday"].indexOf(dayName);
+        while (firstOccurrence.getDay() !== targetDay) firstOccurrence.setDate(firstOccurrence.getDate() + 1);
+        return date.getDate() === firstOccurrence.getDate();
+      }
+      default: return false;
+    }
+  };
+
+  const getSchedulesForDate = (date) =>
+    schedules.filter(s => isScheduledForDate(date, s));
+
+  const hasCollection = (date) =>
+    schedules.filter(s => s.type === "collection").some(s => isScheduledForDate(date, s));
+
+  const hasSubmission = (date) =>
+    schedules.filter(s => s.type === "submission").some(s => isScheduledForDate(date, s));
+
+  // Build the 7-day strip for the week containing anchorDate ─────────────────
+  const weekStart = startOfWeek(anchorDate);
+  const days = Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(weekStart);
+    d.setDate(weekStart.getDate() + i);
+    return d;
+  });
+
+  const prevWeek = () => {
+    const d = new Date(anchorDate);
+    d.setDate(d.getDate() - 7);
+    setAnchorDate(d);
+  };
+
+  const nextWeek = () => {
+    const d = new Date(anchorDate);
+    d.setDate(d.getDate() + 7);
+    setAnchorDate(d);
+  };
+
+  const handleDayPress = (date) => {
+    setSelectedDate(date);
+    setSelectedDateSchedules(getSchedulesForDate(date));
+  };
+
+  // Keep selectedDateSchedules in sync when schedules prop updates ────────────
+  useEffect(() => {
+    if (selectedDate) setSelectedDateSchedules(getSchedulesForDate(selectedDate));
+  }, [schedules, selectedDate]);
+
+  const monthLabel = (() => {
+    const start = days[0];
+    const end = days[6];
+    if (start.getMonth() === end.getMonth()) {
+      return start.toLocaleDateString("en-US", { month: "long", year: "numeric" });
+    }
+    return `${start.toLocaleDateString("en-US", { month: "short" })} – ${end.toLocaleDateString("en-US", { month: "short", year: "numeric" })}`;
+  })();
+
+  const DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+  const formatTime = (start, end) => {
+    try {
+      const to12 = (t) => {
+        const [h, m] = t.split(":");
+        const d = new Date();
+        d.setHours(+h, +m);
+        return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      };
+      return end ? `${to12(start)} – ${to12(end)}` : to12(start);
+    } catch { return end ? `${start} – ${end}` : start; }
+  };
+
+  return (
+    <div className="w-full">
+      {/* Week header ─ month label + prev/next */}
+      <div className="flex items-center justify-between mb-3">
+        <span className={`text-sm font-bold ${isDark ? "text-gray-200" : "text-gray-800"}`}>
+          {monthLabel}
+        </span>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={prevWeek}
+            className={`w-7 h-7 rounded-full flex items-center justify-center transition-colors ${
+              isDark ? "hover:bg-gray-700 text-gray-400" : "hover:bg-gray-100 text-gray-500"
+            }`}
+            aria-label="Previous week"
+          >
+            ‹
+          </button>
+          <button
+            onClick={() => { setAnchorDate(new Date(today)); handleDayPress(new Date(today)); }}
+            className={`text-[10px] font-bold px-2 py-0.5 rounded-full transition-colors ${
+              isDark ? "bg-emerald-900/40 text-emerald-400 hover:bg-emerald-900/60" : "bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
+            }`}
+          >
+            Today
+          </button>
+          <button
+            onClick={nextWeek}
+            className={`w-7 h-7 rounded-full flex items-center justify-center transition-colors ${
+              isDark ? "hover:bg-gray-700 text-gray-400" : "hover:bg-gray-100 text-gray-500"
+            }`}
+            aria-label="Next week"
+          >
+            ›
+          </button>
+        </div>
+      </div>
+
+      {/* Day strip */}
+      <div className="grid grid-cols-7 gap-1">
+        {days.map((date, i) => {
+          const isToday    = isSameDay(date, today);
+          const isSelected = selectedDate && isSameDay(date, selectedDate);
+          const col        = hasCollection(date);
+          const sub        = hasSubmission(date);
+          const isPast     = date < today;
+
+          return (
+            <button
+              key={i}
+              onClick={() => handleDayPress(date)}
+              disabled={isPast}
+              className={`flex flex-col items-center py-2 rounded-xl transition-all ${
+                isSelected
+                  ? "bg-emerald-500 text-white shadow-md shadow-emerald-500/30"
+                  : isToday
+                  ? (isDark ? "bg-amber-900/40 border border-amber-600/60" : "bg-amber-50 border border-amber-300")
+                  : (isDark ? "hover:bg-gray-700/60" : "hover:bg-gray-50")
+              } ${isPast ? "opacity-35 cursor-not-allowed" : "cursor-pointer"}`}
+            >
+              {/* Day letter */}
+              <span className={`text-[10px] font-semibold mb-0.5 ${
+                isSelected ? "text-emerald-100"
+                : isToday  ? (isDark ? "text-amber-400" : "text-amber-600")
+                : (isDark ? "text-gray-500" : "text-gray-400")
+              }`}>
+                {DAY_LABELS[i]}
+              </span>
+
+              {/* Date number */}
+              <span className={`text-sm font-bold leading-none ${
+                isSelected ? "text-white"
+                : isToday  ? (isDark ? "text-amber-300" : "text-amber-700")
+                : isPast   ? (isDark ? "text-gray-600" : "text-gray-300")
+                : (isDark  ? "text-gray-200" : "text-gray-800")
+              }`}>
+                {date.getDate()}
+              </span>
+
+              {/* Schedule dots */}
+              <div className="flex gap-0.5 mt-1 h-1.5">
+                {col && <span className={`w-1.5 h-1.5 rounded-full ${isSelected ? "bg-white" : "bg-blue-500"}`} />}
+                {sub && <span className={`w-1.5 h-1.5 rounded-full ${isSelected ? "bg-emerald-100" : "bg-green-500"}`} />}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Selected day detail */}
+      {selectedDate && selectedDateSchedules.length > 0 && (
+        <div className={`mt-4 rounded-xl border p-3 space-y-2 ${
+          isDark ? "bg-gray-800/60 border-gray-700" : "bg-gray-50 border-gray-200"
+        }`}>
+          <p className={`text-xs font-semibold ${isDark ? "text-gray-300" : "text-gray-600"}`}>
+            {selectedDate.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" })}
+          </p>
+          {selectedDateSchedules.map((s, idx) => (
+            <div key={idx} className={`flex items-start gap-2.5 p-2.5 rounded-lg border ${
+              s.type === "collection"
+                ? (isDark ? "bg-blue-900/20 border-blue-800/50" : "bg-blue-50 border-blue-200")
+                : (isDark ? "bg-green-900/20 border-green-800/50" : "bg-green-50 border-green-200")
+            }`}>
+              <span className={`mt-0.5 text-xs font-bold px-1.5 py-0.5 rounded-full ${
+                s.type === "collection"
+                  ? (isDark ? "bg-blue-500/20 text-blue-400" : "bg-blue-100 text-blue-700")
+                  : (isDark ? "bg-green-500/20 text-green-400" : "bg-green-100 text-green-700")
+              }`}>
+                {s.type === "collection" ? "🚛" : "♻️"}
+              </span>
+              <div className="flex-1 min-w-0">
+                <p className={`text-xs font-semibold ${
+                  s.type === "collection"
+                    ? (isDark ? "text-blue-300" : "text-blue-700")
+                    : (isDark ? "text-green-300" : "text-green-700")
+                }`}>
+                  {s.type === "collection" ? "Waste Collection" : "Submission Day"}
+                </p>
+                {(s.area || s.barangay) && (
+                  <p className={`text-[11px] mt-0.5 truncate ${isDark ? "text-gray-400" : "text-gray-500"}`}>
+                    📍 {s.area}{s.barangay ? `, ${s.barangay}` : ""}
+                  </p>
+                )}
+                {(s.startTime || s.time) && (
+                  <p className={`text-[11px] mt-0.5 ${isDark ? "text-gray-400" : "text-gray-500"}`}>
+                    🕐 {formatTime(s.startTime || s.time, s.endTime)}
+                  </p>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {selectedDate && selectedDateSchedules.length === 0 && (
+        <p className={`mt-3 text-xs text-center ${isDark ? "text-gray-600" : "text-gray-400"}`}>
+          No schedules on {selectedDate.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" })}.
+        </p>
+      )}
+    </div>
   );
 }

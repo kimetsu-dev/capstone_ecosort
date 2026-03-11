@@ -130,18 +130,14 @@ export default function WasteTypesManager() {
   return (
     <div className="w-full max-w-6xl mx-auto p-4 space-y-6">
       {/* Header */}
-      <div className={`rounded-lg shadow-sm border p-6 ${
-        isDark 
-          ? "bg-gray-800 border-gray-700" 
-          : "bg-white border-gray-200"
-      }`}>
-        <h2 className={`text-2xl font-bold mb-2 ${
-          isDark ? "text-gray-100" : "text-gray-800"
-        }`}>
-          Waste Types Management
-        </h2>
-        <p className={isDark ? "text-gray-400" : "text-gray-600"}>
-          Manage waste types and their points per kilogram
+      <div>
+        <div className="flex items-center gap-2 mb-2">
+          <h2 className={`text-2xl font-bold ${isDark ? "text-gray-100" : "text-slate-800"}`}>
+            Waste Types Management
+          </h2>
+        </div>
+        <p className={`${isDark ? "text-gray-400" : "text-slate-600"}`}>
+          Manage waste types and their points per kilogram.
         </p>
       </div>
 

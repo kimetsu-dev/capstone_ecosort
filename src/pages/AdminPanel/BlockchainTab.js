@@ -10,7 +10,8 @@ import {
   createPublicAnchor,
   getAllAnchors,
   generateAuditProof,
-  repairChain 
+  repairChain,
+  acknowledgeTamper
 } from '../../utils/blockchainService';
 import { 
   ShieldCheck, 
@@ -54,6 +55,7 @@ const BlockchainTab = () => {
   const [verificationDetails, setVerificationDetails] = useState(null); 
   const [externalDataStatus, setExternalDataStatus] = useState(null); 
   const [repairResult, setRepairResult] = useState(null);
+  const [acknowledgingTamper, setAcknowledgingTamper] = useState(false);
   
   // NEW: Educational panel states
   const [showWhyBlockchain, setShowWhyBlockchain] = useState(false);
@@ -187,8 +189,13 @@ const BlockchainTab = () => {
         try {
             const result = await repairChain();
             setRepairResult(result);
-            alert(`Chain Repair Complete! Repaired ${result.repairedCount} blocks. New Latest Hash: ${result.latestHash.substring(0, 10)}...`);
-            await loadChainStatus();
+            if (result.success) {
+              const hashPreview = result.latestHash ? result.latestHash.substring(0, 10) + '...' : 'N/A';
+              alert(`Chain Repair Complete! Repaired ${result.repairedCount} blocks. New Latest Hash: ${hashPreview}`);
+              await loadChainStatus();
+            } else {
+              alert(`Chain Repair Stopped:\n\n${result.message}`);
+            }
         } catch (error) {
             alert("Chain Repair Failed: " + error.message);
         } finally {
@@ -196,6 +203,25 @@ const BlockchainTab = () => {
         }
     }
   }
+
+  const handleAcknowledgeTamper = async (tamperedBlockIndices) => {
+    if (!window.confirm(
+      `This will write a corrective entry to the ledger acknowledging that block(s) #${tamperedBlockIndices.join(', ')} were externally modified.\n\nThe tampered block(s) are permanently preserved as evidence. After acknowledging, you can run Repair Chain to restore chain links.\n\nContinue?`
+    )) return;
+
+    setAcknowledgingTamper(true);
+    try {
+      for (const blockIndex of tamperedBlockIndices) {
+        await acknowledgeTamper(blockIndex);
+      }
+      alert(`Tamper acknowledged and recorded on the ledger. You can now run Repair Chain.`);
+      await loadChainStatus();
+    } catch (err) {
+      alert("Failed to acknowledge tamper: " + err.message);
+    } finally {
+      setAcknowledgingTamper(false);
+    }
+  };
 
   useEffect(() => {
     loadChainStatus(true);
@@ -208,15 +234,15 @@ const BlockchainTab = () => {
   };
   
   return (
-    <div className={`p-6 ${isDark ? "text-gray-100" : "text-gray-800"}`}>
+    <div className={`p-3 sm:p-6 w-full overflow-hidden ${isDark ? "text-gray-100" : "text-gray-800"}`}>
       {/* Header with Educational Toggle */}
-      <div className="flex items-center justify-between mb-6">
-        <h2 className="text-3xl font-bold">Blockchain Admin Panel</h2>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-6 gap-3">
+        <h2 className="text-2xl sm:text-3xl font-bold">Blockchain Admin Panel</h2>
         
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <button
             onClick={() => setShowWhyBlockchain(!showWhyBlockchain)}
-            className={`px-4 py-2 rounded-lg font-medium flex items-center gap-2 transition-colors ${
+            className={`px-3 py-2 rounded-lg font-medium flex items-center gap-2 transition-colors text-sm ${
               showWhyBlockchain 
                 ? isDark ? "bg-indigo-600 text-white" : "bg-indigo-500 text-white"
                 : isDark ? "bg-gray-700 text-gray-300 hover:bg-gray-600" : "bg-gray-200 text-gray-700 hover:bg-gray-300"
@@ -228,7 +254,7 @@ const BlockchainTab = () => {
           
           <button
             onClick={() => setShowTechnicalDetails(!showTechnicalDetails)}
-            className={`px-4 py-2 rounded-lg font-medium flex items-center gap-2 transition-colors ${
+            className={`px-3 py-2 rounded-lg font-medium flex items-center gap-2 transition-colors text-sm ${
               showTechnicalDetails 
                 ? isDark ? "bg-purple-600 text-white" : "bg-purple-500 text-white"
                 : isDark ? "bg-gray-700 text-gray-300 hover:bg-gray-600" : "bg-gray-200 text-gray-700 hover:bg-gray-300"
@@ -249,8 +275,8 @@ const BlockchainTab = () => {
           </h3>
           
           {/* Comparison Table */}
-          <div className="overflow-x-auto mb-6">
-            <table className="w-full text-sm">
+          <div className="overflow-x-auto mb-6 -mx-2">
+            <table className="w-full text-sm min-w-[480px]">
               <thead>
                 <tr className={isDark ? "bg-gray-700" : "bg-gray-100"}>
                   <th className="p-3 text-left font-semibold">Traditional Database</th>
@@ -393,22 +419,22 @@ const BlockchainTab = () => {
                 <Hash className="w-4 h-4" />
                 SHA-256 Hash Example
               </h4>
-              <div className="space-y-2 font-mono text-xs">
-                <div>
+              <div className="space-y-2 font-mono text-xs overflow-hidden">
+                <div className="truncate">
                   <span className="opacity-60">Input: </span>
                   <span className="text-blue-500">"transaction_123"</span>
                 </div>
-                <div>
+                <div className="truncate">
                   <span className="opacity-60">SHA-256: </span>
                   <span className="text-green-500">a7f8b9c0d1e2...</span>
                 </div>
                 <div className="border-t border-gray-300 dark:border-gray-600 my-2"></div>
-                <div>
+                <div className="truncate">
                   <span className="opacity-60">Input: </span>
                   <span className="text-red-500">"transaction_124"</span>
                   <span className="opacity-60"> (changed 1 digit)</span>
                 </div>
-                <div>
+                <div className="truncate">
                   <span className="opacity-60">SHA-256: </span>
                   <span className="text-red-500">x1y2z3a4b5c6...</span>
                   <span className="opacity-60"> (completely different!)</span>
@@ -476,7 +502,7 @@ const BlockchainTab = () => {
       )}
 
       {/* Main Controls Row */}
-      <div className="flex flex-wrap gap-4 items-center mb-6">
+      <div className="flex flex-wrap gap-2 sm:gap-4 items-center mb-6">
         {/* Refresh Button */}
         <button
           onClick={loadChainStatus}
@@ -539,19 +565,22 @@ const BlockchainTab = () => {
             </button>
         )}
 
-        {/* Repair Chain Button */}
-        {chainStatus.initialized && verificationDetails && !verificationDetails.valid && (
+        {/* Repair Chain Button — always visible when initialized so admin
+             can run a repair at any time, not just when the UI detects failure */}
+        {chainStatus.initialized && (
              <button
                 onClick={handleRepairChain}
                 disabled={loading}
                 className={`px-4 py-2 rounded-lg font-semibold flex items-center gap-2 transition-colors ${
                     loading
                     ? isDark ? "bg-gray-700 text-gray-400" : "bg-gray-300 text-gray-600"
-                    : isDark ? "bg-red-600 hover:bg-red-700 text-white" : "bg-red-500 hover:bg-red-600 text-white"
+                    : (verificationDetails && !verificationDetails.valid)
+                        ? isDark ? "bg-red-600 hover:bg-red-700 text-white" : "bg-red-500 hover:bg-red-600 text-white"
+                        : isDark ? "bg-orange-600 hover:bg-orange-700 text-white" : "bg-orange-500 hover:bg-orange-600 text-white"
                 }`}
             >
                 {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Wrench className="w-5 h-5" />}
-                Repair Chain
+                {(verificationDetails && !verificationDetails.valid) ? "⚠ Repair Chain" : "Repair Chain"}
             </button>
         )}
       </div>
@@ -563,8 +592,14 @@ const BlockchainTab = () => {
                 ? isDark ? "bg-emerald-900/30 border border-emerald-700 text-emerald-300" : "bg-emerald-50 border border-emerald-200 text-emerald-700"
                 : isDark ? "bg-red-900/30 border border-red-700 text-red-300" : "bg-red-50 border border-red-200 text-red-700"
         }`}>
-            <p className="font-semibold">{repairResult.success ? `✅ Repair Successful!` : `❌ Repair Failed`}</p>
-            <p className="text-sm">Repaired Blocks: {repairResult.repairedCount}. Latest Hash: {repairResult.latestHash.substring(0, 15)}...</p>
+            <p className="font-semibold">{repairResult.success ? `✅ Repair Successful!` : `❌ Repair Stopped`}</p>
+            {repairResult.success ? (
+              <p className="text-sm">
+                Repaired Blocks: {repairResult.repairedCount ?? 0}. Latest Hash: {repairResult.latestHash ? repairResult.latestHash.substring(0, 15) + '...' : 'N/A'}
+              </p>
+            ) : (
+              <p className="text-sm">{repairResult.message}</p>
+            )}
         </div>
       )}
 
@@ -607,8 +642,8 @@ const BlockchainTab = () => {
             <p className={`text-sm font-semibold mb-1 ${isDark ? "text-gray-300" : "text-gray-700"}`}>
                 Latest Block Hash
             </p>
-            <div className="flex items-center gap-2">
-                <code className={`text-sm break-all font-mono p-2 rounded-lg flex-1 ${isDark ? "bg-black/20 text-indigo-300" : "bg-gray-100 text-indigo-600"}`}>
+            <div className="flex items-center gap-2 min-w-0">
+                <code className={`text-xs sm:text-sm break-all font-mono p-2 rounded-lg flex-1 min-w-0 ${isDark ? "bg-black/20 text-indigo-300" : "bg-gray-100 text-indigo-600"}`}>
                     {latestHash}
                 </code>
                 <button
@@ -625,7 +660,7 @@ const BlockchainTab = () => {
         )}
 
         {/* Overall Status and Actions Row */}
-        <div className="flex flex-wrap gap-4">
+        <div className="flex flex-col sm:flex-row gap-4">
             {/* 1. Overall Blockchain Structural Integrity Card */}
             {verificationDetails && (
                 <div 
@@ -647,9 +682,44 @@ const BlockchainTab = () => {
                                 {verificationDetails.message}
                             </p>
                             {!verificationDetails.valid && (
-                                <p className="text-xs mt-1 italic">
-                                    Click 'Repair Chain' to attempt an automated fix.
-                                </p>
+                              <div className="mt-3 space-y-2">
+                                {/* Show tampered blocks if any */}
+                                {verificationDetails.invalidBlocks?.length > 0 && (
+                                  <div className={`text-xs p-2 rounded-lg ${isDark ? 'bg-red-900/40 text-red-200' : 'bg-red-100 text-red-800'}`}>
+                                    <strong>⚠ Invalid blocks detected:</strong> #{verificationDetails.invalidBlocks.join(', #')}
+                                  </div>
+                                )}
+                                {/* If tampered data detected, show acknowledge flow first */}
+                                {verificationDetails.invalidBlocks?.some(i =>
+                                  verificationDetails.details?.find(d => d.index === i)?.issues?.some(iss => iss.includes('tampering'))
+                                ) ? (
+                                  <div className="space-y-1">
+                                    <p className={`text-xs italic ${isDark ? 'text-red-300' : 'text-red-700'}`}>
+                                      Data tampering detected. Acknowledge the tampered block(s) to record it on the ledger as evidence, then run Repair Chain to restore chain links.
+                                    </p>
+                                    <button
+                                      onClick={() => handleAcknowledgeTamper(
+                                        verificationDetails.invalidBlocks.filter(i =>
+                                          verificationDetails.details?.find(d => d.index === i)?.issues?.some(iss => iss.includes('tampering'))
+                                        )
+                                      )}
+                                      disabled={acknowledgingTamper}
+                                      className={`text-xs px-3 py-1.5 rounded-lg font-semibold flex items-center gap-1.5 transition-colors ${
+                                        isDark ? 'bg-yellow-600 hover:bg-yellow-700 text-white' : 'bg-yellow-500 hover:bg-yellow-600 text-white'
+                                      } disabled:opacity-50`}
+                                    >
+                                      {acknowledgingTamper
+                                        ? <><Loader2 className="w-3 h-3 animate-spin"/> Acknowledging...</>
+                                        : <><AlertTriangle className="w-3 h-3"/> Acknowledge Tamper & Record Evidence</>
+                                      }
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <p className={`text-xs italic ${isDark ? 'text-red-300' : 'text-red-700'}`}>
+                                    Broken chain links detected (no data tampering). Click Repair Chain above to fix.
+                                  </p>
+                                )}
+                              </div>
                             )}
                         </div>
                     </div>
@@ -739,7 +809,7 @@ const BlockchainTab = () => {
                       {idx === 0 && <span className={`text-xs font-bold px-2 py-0.5 rounded ${isDark ? "bg-purple-700 text-purple-200" : "bg-purple-200 text-purple-800"}`}>LATEST</span>}
                       <span className={`text-sm ${isDark ? "text-gray-400" : "text-gray-500"}`}><Clock className="w-3 h-3 inline mr-1" />{anchor.publishedAt ? new Date(anchor.publishedAt).toLocaleString() : "Unknown"}</span>
                     </div>
-                    <code className={`text-xs font-mono ${isDark ? "text-indigo-300" : "text-indigo-600"}`}>{anchor.latestHash}</code>
+                    <code className={`text-xs font-mono break-all ${isDark ? "text-indigo-300" : "text-indigo-600"}`}>{anchor.latestHash}</code>
                   </div>
                   <div className={`flex items-center gap-4 text-sm ${isDark ? "text-gray-400" : "text-gray-500"}`}>
                     <span><strong className={isDark ? "text-white" : "text-gray-800"}>{anchor.blockCount}</strong> blocks</span>

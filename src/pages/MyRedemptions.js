@@ -7,9 +7,12 @@ import {
   orderBy,
   doc,
   runTransaction,
-  getDocs
+  getDocs,
+  addDoc,
+  serverTimestamp
 } from "firebase/firestore";
 import { db } from "../firebase";
+import { addToLedger } from "../utils/ledgerService";
 import { useAuth } from "../contexts/AuthContext";
 import { useNavigate, useLocation } from "react-router-dom";
 import {
@@ -22,15 +25,27 @@ import {
   Copy,
   Eye,
   EyeOff,
-  ShieldCheck, // New: Blockchain Icon
-  Link,        // New: Chain Icon
-  Hash,        // New: Hash Icon
-  Box,         // New: Block Icon
-  X            // New: Close Icon
+  ShieldCheck,
+  Link,
+  Hash,
+  Box,
+  X
 } from "lucide-react";
 import { useTheme } from "../contexts/ThemeContext";
 
-// --- NEW COMPONENT: Blockchain Details Modal ---
+async function addNotification(userId, message, type = "redemption_status", extras = {}) {
+  const notificationsRef = collection(db, "notifications", userId, "userNotifications");
+  await addDoc(notificationsRef, {
+    type,
+    message,
+    read: false,
+    createdAt: serverTimestamp(),
+    ...(extras.title  ? { title:  extras.title  } : {}),
+    ...(extras.reason ? { reason: extras.reason } : {}),
+    ...(extras.status ? { status: extras.status } : {}),
+  });
+}
+
 function BlockDetailModal({ block, visible, onClose }) {
   const { isDark } = useTheme();
   if (!visible || !block) return null;
@@ -44,7 +59,6 @@ function BlockDetailModal({ block, visible, onClose }) {
           isDark ? "bg-gray-800 border border-gray-700" : "bg-white border border-gray-200"
         }`}
       >
-        {/* Modal Header */}
         <div className="relative p-6 pb-0">
           <button
             onClick={onClose}
@@ -69,12 +83,9 @@ function BlockDetailModal({ block, visible, onClose }) {
           </div>
         </div>
 
-        {/* Modal Body */}
         <div className="p-6 space-y-5">
-          {/* Cryptographic Data Card */}
           <div className={`p-5 rounded-xl space-y-4 ${isDark ? "bg-gray-900/50 border border-gray-700" : "bg-gray-50 border border-gray-100"}`}>
             
-            {/* Block Index */}
             <div className="flex justify-between items-center border-b border-gray-200/10 pb-3">
               <div className="flex items-center gap-2">
                 <Box className="w-4 h-4 text-blue-500" />
@@ -87,7 +98,6 @@ function BlockDetailModal({ block, visible, onClose }) {
               </span>
             </div>
 
-            {/* Current Hash */}
             <div>
               <div className="flex items-center gap-2 mb-2">
                 <Hash className="w-4 h-4 text-purple-500" />
@@ -102,7 +112,6 @@ function BlockDetailModal({ block, visible, onClose }) {
               </div>
             </div>
 
-            {/* Previous Hash */}
             <div>
               <div className="flex items-center gap-2 mb-2">
                 <Link className="w-4 h-4 text-orange-500" />
@@ -122,7 +131,6 @@ function BlockDetailModal({ block, visible, onClose }) {
             </div>
           </div>
 
-          {/* Education/Explanation */}
           <div className={`flex gap-3 p-4 rounded-lg text-sm border ${
             isDark ? "bg-blue-900/10 border-blue-900/30 text-blue-300" : "bg-blue-50 border-blue-100 text-blue-700"
           }`}>
@@ -147,11 +155,12 @@ export default function MyRedemptions() {
   const [error, setError] = useState(null);
   const [visibleCodes, setVisibleCodes] = useState(new Set());
   const [copiedCode, setCopiedCode] = useState(null);
+  const [activeFilter, setActiveFilter] = useState("all");
 
-  // Blockchain State
   const [ledgerMap, setLedgerMap] = useState({});
   const [selectedBlock, setSelectedBlock] = useState(null);
   const [showBlockModal, setShowBlockModal] = useState(false);
+  const [confirmCancel, setConfirmCancel] = useState({ show: false, redemption: null });
 
   const navigate = useNavigate();
   const location = useLocation();
@@ -167,7 +176,6 @@ export default function MyRedemptions() {
     </svg>
   );
 
-  // Fetch Blockchain Ledger Data
   const fetchLedger = useCallback(async () => {
     if (!currentUser) return;
 
@@ -178,7 +186,6 @@ export default function MyRedemptions() {
       const map = {};
       snapshot.docs.forEach(doc => {
         const data = doc.data();
-        // Map ledger block to firestore ID (redemption ID)
         if (data.metadata && data.metadata.firestoreId) {
           map[data.metadata.firestoreId] = {
             id: doc.id,
@@ -193,7 +200,6 @@ export default function MyRedemptions() {
     }
   }, [currentUser]);
 
-  // Load Redemptions & Ledger
   useEffect(() => {
     if (!currentUser || !currentUser.uid) {
       setLoading(false);
@@ -201,7 +207,6 @@ export default function MyRedemptions() {
       return;
     }
 
-    // Fetch Ledger
     fetchLedger();
 
     const redemptionsQuery = query(
@@ -228,12 +233,12 @@ export default function MyRedemptions() {
   }, [currentUser, fetchLedger]);
 
   const cancelRedemption = async (redemption) => {
-    if (!window.confirm("Cancel this redemption? Points will be refunded.")) return;
-
     setCancellingId(redemption.id);
+    setConfirmCancel({ show: false, redemption: null });
     setError(null);
 
     try {
+      let refundPoints = 0;
       await runTransaction(db, async (transaction) => {
         const redemptionRef = doc(db, "redemptions", redemption.id);
         const userRef = doc(db, "users", currentUser.uid);
@@ -249,20 +254,41 @@ export default function MyRedemptions() {
           throw new Error("Only pending redemptions can be cancelled.");
         }
 
-        const refundPoints = redemptionData.cost ?? 0;
+        refundPoints = redemptionData.cost ?? 0;
         const currentPoints = userSnap.data().totalPoints ?? 0;
 
         transaction.update(redemptionRef, {
           status: "cancelled",
-          cancelledAt: new Date(),
+          cancelledAt: serverTimestamp(),
         });
 
         transaction.update(userRef, { totalPoints: currentPoints + refundPoints });
       });
-      alert("Redemption cancelled and points refunded.");
+
+      await addToLedger(
+        currentUser.uid,
+        "REDEMPTION_CANCELLED",
+        refundPoints,
+        {
+          redemptionId: redemption.id,
+          rewardName: redemption.rewardName ?? null,
+          refundedPoints: refundPoints,
+        }
+      );
+
+      await addNotification(
+        currentUser.uid,
+        `Your redemption for "${redemption.rewardName || "reward"}" has been cancelled. ${refundPoints > 0 ? `${refundPoints} points have been refunded to your account.` : ""}`,
+        "redemption_status",
+        {
+          title: "Redemption Cancelled",
+          status: "cancelled",
+        }
+      );
+
     } catch (err) {
       console.error("Error cancelling redemption:", err);
-      alert(err.message || "Failed to cancel redemption. Please try again.");
+      setError(err.message || "Failed to cancel redemption. Please try again.");
     } finally {
       setCancellingId(null);
     }
@@ -287,7 +313,6 @@ export default function MyRedemptions() {
     }
   };
 
-  // Handle viewing block details
   const handleViewBlock = (redemptionId) => {
     const block = ledgerMap[redemptionId];
     if (block) {
@@ -301,8 +326,11 @@ export default function MyRedemptions() {
       case "pending":
         return <Clock className="w-4 h-4 text-yellow-500" />;
       case "completed":
+      case "claimed":
         return <CheckCircle className="w-4 h-4 text-green-500" />;
       case "cancelled":
+        return <XCircle className="w-4 h-4 text-gray-400" />;
+      case "rejected":
         return <XCircle className="w-4 h-4 text-red-500" />;
       default:
         return <AlertCircle className="w-4 h-4 text-gray-500" />;
@@ -316,10 +344,15 @@ export default function MyRedemptions() {
           ? "bg-yellow-700 text-yellow-300 border-yellow-600"
           : "bg-yellow-100 text-yellow-800 border-yellow-200";
       case "completed":
+      case "claimed":
         return isDark
           ? "bg-green-700 text-green-300 border-green-600"
           : "bg-green-100 text-green-800 border-green-200";
       case "cancelled":
+        return isDark
+          ? "bg-gray-700 text-gray-400 border-gray-600"
+          : "bg-gray-100 text-gray-600 border-gray-300";
+      case "rejected":
         return isDark
           ? "bg-red-700 text-red-300 border-red-600"
           : "bg-red-100 text-red-800 border-red-200";
@@ -330,7 +363,6 @@ export default function MyRedemptions() {
     }
   };
 
-  // Back button handler
   const handleBack = () => {
     if (location.state && location.state.from === "/profile") {
       navigate("/profile");
@@ -386,14 +418,47 @@ export default function MyRedemptions() {
   return (
     <div className={`max-w-6xl mx-auto p-6 space-y-6 ${isDark ? "bg-gray-900 text-gray-200" : ""}`}>
       
-      {/* Blockchain Verification Modal */}
       <BlockDetailModal 
         visible={showBlockModal} 
         block={selectedBlock} 
         onClose={() => setShowBlockModal(false)} 
       />
 
-      {/* Header */}
+      {confirmCancel.show && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className={`w-full max-w-sm sm:rounded-2xl rounded-t-2xl p-6 shadow-2xl ${isDark ? "bg-gray-800 border border-gray-700" : "bg-white"}`}>
+            <div className="flex items-center gap-3 mb-3 text-red-500">
+              <AlertCircle className="w-6 h-6 flex-shrink-0" />
+              <h3 className={`text-lg font-bold ${isDark ? "text-white" : "text-gray-900"}`}>Cancel Redemption?</h3>
+            </div>
+            <p className={`mb-1 text-sm ${isDark ? "text-gray-300" : "text-gray-600"}`}>
+              Are you sure you want to cancel your redemption for{" "}
+              <span className="font-semibold">{confirmCancel.redemption?.rewardName || "this reward"}</span>?
+            </p>
+            <p className={`mb-6 text-sm ${isDark ? "text-green-400" : "text-green-600"}`}>
+              Your points will be refunded immediately.
+            </p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setConfirmCancel({ show: false, redemption: null })}
+                disabled={cancellingId !== null}
+                className={`flex-1 py-2.5 rounded-xl font-medium transition-colors ${isDark ? "bg-gray-700 hover:bg-gray-600 text-white" : "bg-gray-100 hover:bg-gray-200 text-gray-800"}`}
+              >
+                Keep It
+              </button>
+              <button
+                onClick={() => cancelRedemption(confirmCancel.redemption)}
+                disabled={cancellingId !== null}
+                className="flex-1 py-2.5 rounded-xl font-medium bg-red-600 hover:bg-red-700 text-white flex justify-center items-center gap-2 transition-colors disabled:opacity-50"
+              >
+                {cancellingId ? <Loader2 className="w-4 h-4 animate-spin" /> : <XCircle className="w-4 h-4" />}
+                {cancellingId ? "Cancelling..." : "Yes, Cancel"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="mb-6">
         <button
           onClick={handleBack}
@@ -419,8 +484,80 @@ export default function MyRedemptions() {
           <h3 className="text-xl font-semibold mb-2">No Redemptions Yet</h3>
           <p>You haven't redeemed any rewards yet. Start earning points to unlock amazing rewards!</p>
         </div>
-      ) : (
-        <div className={`rounded-xl overflow-hidden shadow-sm ${isDark ? "bg-gray-800 border-gray-700" : "bg-white border-gray-200"}`}>
+      ) : (() => {
+        const TABS = [
+          { key: "all",       label: "All" },
+          { key: "pending",   label: "Pending" },
+          { key: "completed", label: "Completed" },
+          { key: "cancelled", label: "Cancelled" },
+          { key: "rejected",  label: "Rejected" },
+        ];
+
+        const tabColors = {
+          pending:   { active: "bg-yellow-500 text-white", dot: "bg-yellow-400" },
+          completed: { active: "bg-green-500 text-white",  dot: "bg-green-400" },
+          cancelled: { active: "bg-gray-500 text-white",   dot: "bg-gray-400" },
+          rejected:  { active: "bg-red-500 text-white",    dot: "bg-red-400" },
+          all:       { active: isDark ? "bg-gray-200 text-gray-900" : "bg-gray-800 text-white", dot: "" },
+        };
+
+        const counts = TABS.reduce((acc, t) => {
+          acc[t.key] = t.key === "all"
+            ? redemptions.length
+            : redemptions.filter(r => r.status === t.key || (t.key === "completed" && r.status === "claimed")).length;
+          return acc;
+        }, {});
+
+        const filtered = activeFilter === "all"
+          ? redemptions
+          : redemptions.filter(r =>
+              activeFilter === "completed"
+                ? r.status === "completed" || r.status === "claimed"
+                : r.status === activeFilter
+            );
+
+        return (
+          <>
+            <div className={`rounded-xl border overflow-hidden ${isDark ? "bg-gray-800 border-gray-700" : "bg-white border-gray-200"}`}>
+              <div className={`flex gap-1 p-3 border-b overflow-x-auto scrollbar-none ${isDark ? "border-gray-700 bg-gray-800/80" : "border-gray-100 bg-gray-50"}`}
+                style={{ WebkitOverflowScrolling: 'touch' }}>
+                {TABS.map(tab => {
+                  const isActive = activeFilter === tab.key;
+                  const c = tabColors[tab.key];
+                  return (
+                    <button
+                      key={tab.key}
+                      onClick={() => setActiveFilter(tab.key)}
+                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all flex-shrink-0 ${
+                        isActive
+                          ? c.active
+                          : isDark
+                            ? "text-gray-400 hover:bg-gray-700 hover:text-gray-200"
+                            : "text-gray-500 hover:bg-gray-200 hover:text-gray-700"
+                      }`}
+                    >
+                      {tab.label}
+                      {counts[tab.key] > 0 && (
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold ${
+                          isActive
+                            ? "bg-white/25 text-white"
+                            : isDark ? "bg-gray-700 text-gray-300" : "bg-gray-200 text-gray-600"
+                        }`}>
+                          {counts[tab.key]}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {filtered.length === 0 ? (
+                <div className={`p-12 text-center ${isDark ? "text-gray-500" : "text-gray-400"}`}>
+                  <Gift className="w-12 h-12 mx-auto mb-3 opacity-40" />
+                  <p className="font-medium">No {activeFilter} redemptions</p>
+                </div>
+              ) : (
+                <>
           {/* Desktop Table View */}
           <div className="hidden lg:block overflow-x-auto">
             <table className="w-full table-fixed">
@@ -439,14 +576,12 @@ export default function MyRedemptions() {
                 </tr>
               </thead>
               <tbody className={`divide-y ${isDark ? "divide-gray-600" : "divide-gray-200"}`}>
-                {redemptions.map((item) => {
-                  // Check if this item is on the blockchain
+                {filtered.map((item) => {
                   const ledgerBlock = ledgerMap[item.id];
                   
                   return (
+                    <React.Fragment key={item.id}>
                     <tr
-                      key={item.id}
-                      // Make row clickable if on blockchain
                       onClick={() => ledgerBlock && handleViewBlock(item.id)}
                       className={`transition-colors duration-150 ${
                         ledgerBlock ? "cursor-pointer group" : "cursor-default"
@@ -454,8 +589,14 @@ export default function MyRedemptions() {
                     >
                       <td className="px-6 py-4 whitespace-nowrap">
                         <div className="flex items-center gap-2">
-                            <span className="font-medium">Reward #{item.rewardId}</span>
-                            {/* Hover Shield */}
+                            <span className="font-medium">{item.rewardName || `Reward #${item.rewardId}`}</span>
+                            {item.quantity > 1 && (
+                              <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${
+                                isDark ? "bg-indigo-900/50 text-indigo-300 border border-indigo-700" : "bg-indigo-100 text-indigo-700 border border-indigo-200"
+                              }`}>
+                                Qty: {item.quantity}
+                              </span>
+                            )}
                             {ledgerBlock && (
                               <ShieldCheck className="w-4 h-4 text-green-500 opacity-50 group-hover:opacity-100 transition-opacity" />
                             )}
@@ -493,7 +634,6 @@ export default function MyRedemptions() {
                             {getStatusIcon(item.status)}
                             <span className="ml-2 capitalize">{item.status}</span>
                           </div>
-                          {/* Verification Badge */}
                           {ledgerBlock && (
                              <div className="flex items-center gap-1 text-[10px] text-green-500 font-semibold ml-1">
                                 <ShieldCheck className="w-3 h-3" /> Verified on Chain
@@ -515,7 +655,7 @@ export default function MyRedemptions() {
                       <td className="px-6 py-4 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
                         {item.status === "pending" ? (
                           <button
-                            onClick={() => cancelRedemption(item)}
+                            onClick={() => setConfirmCancel({ show: true, redemption: item })}
                             className={`inline-flex items-center px-3 py-2 text-sm font-medium rounded-lg focus:outline-none focus:ring-2 transition-colors duration-150 ${
                               isDark
                                 ? "text-red-400 bg-red-900 border-red-700 hover:bg-red-800 focus:ring-red-600 disabled:opacity-50"
@@ -543,7 +683,28 @@ export default function MyRedemptions() {
                         )}
                       </td>
                     </tr>
-                  );
+                    {item.status === "rejected" && (item.rejectionReason || item.reason) && (
+                      <tr>
+                        <td colSpan={5} className={`px-6 py-2 ${isDark ? "bg-red-900/10" : "bg-red-50"}`}>
+                          <div className={`flex items-start gap-2 text-xs ${isDark ? "text-red-400" : "text-red-700"}`}>
+                            <AlertCircle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+                            <span><span className="font-semibold">Rejection reason:</span> {item.rejectionReason || item.reason}</span>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                    {item.status === "cancelled" && (
+                      <tr>
+                        <td colSpan={5} className={`px-6 py-2 ${isDark ? "bg-gray-700/30" : "bg-gray-50"}`}>
+                          <div className={`flex items-start gap-2 text-xs ${isDark ? "text-gray-400" : "text-gray-600"}`}>
+                            <XCircle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+                            <span>This redemption was cancelled and your points were refunded.</span>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                );
                 })}
               </tbody>
             </table>
@@ -551,7 +712,7 @@ export default function MyRedemptions() {
 
           {/* Mobile Card View */}
           <div className={`${isDark ? "divide-gray-700" : "divide-gray-200"} lg:hidden divide-y`}>
-            {redemptions.map((item) => {
+            {filtered.map((item) => {
               const ledgerBlock = ledgerMap[item.id];
               
               return (
@@ -562,7 +723,6 @@ export default function MyRedemptions() {
                     isDark ? "bg-gray-800" : "bg-white"
                   } ${ledgerBlock ? "cursor-pointer" : ""}`}
                 >
-                  {/* Verified Background Glow */}
                   {ledgerBlock && (
                     <div className="absolute top-0 right-0 p-1 pointer-events-none">
                        <div className="bg-gradient-to-bl from-green-500/20 to-transparent w-16 h-16 absolute top-0 right-0 -mr-8 -mt-8 rounded-full blur-xl"></div>
@@ -572,8 +732,15 @@ export default function MyRedemptions() {
                   <div className="flex items-center justify-between relative z-10">
                     <div className="flex items-center gap-2">
                       <h3 className={`${isDark ? "text-gray-200" : "text-gray-900"} font-semibold`}>
-                        Reward #{item.rewardId}
+                        {item.rewardName || `Reward #${item.rewardId}`}
                       </h3>
+                      {item.quantity > 1 && (
+                        <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${
+                          isDark ? "bg-indigo-900/50 text-indigo-300 border border-indigo-700" : "bg-indigo-100 text-indigo-700 border border-indigo-200"
+                        }`}>
+                          Qty: {item.quantity}
+                        </span>
+                      )}
                       {ledgerBlock && <ShieldCheck className="w-4 h-4 text-green-500" />}
                     </div>
                     <div className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium border ${getStatusColor(item.status)}`}>
@@ -582,7 +749,6 @@ export default function MyRedemptions() {
                     </div>
                   </div>
 
-                  {/* Mobile Verification Status */}
                   {ledgerBlock && (
                     <div className={`text-[10px] px-2 py-1 rounded w-fit flex items-center gap-1 border ${
                       isDark ? "bg-green-900/20 border-green-800 text-green-400" : "bg-green-50 border-green-200 text-green-700"
@@ -635,7 +801,7 @@ export default function MyRedemptions() {
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
-                        cancelRedemption(item);
+                        setConfirmCancel({ show: true, redemption: item });
                       }}
                       className={`w-full inline-flex items-center justify-center px-4 py-2 text-sm font-medium rounded-lg focus:outline-none focus:ring-2 transition-colors duration-150 ${
                         isDark
@@ -658,14 +824,35 @@ export default function MyRedemptions() {
                       )}
                     </button>
                   )}
+
+                  {item.status === "rejected" && (item.rejectionReason || item.reason) && (
+                    <div className={`flex items-start gap-2 px-3 py-2 rounded-lg text-xs ${
+                      isDark ? "bg-red-900/20 border border-red-800/40 text-red-400" : "bg-red-50 border border-red-200 text-red-700"
+                    }`}>
+                      <AlertCircle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+                      <span><span className="font-semibold">Rejection reason:</span> {item.rejectionReason || item.reason}</span>
+                    </div>
+                  )}
+
+                  {item.status === "cancelled" && (
+                    <div className={`flex items-start gap-2 px-3 py-2 rounded-lg text-xs ${
+                      isDark ? "bg-gray-700/50 border border-gray-600 text-gray-400" : "bg-gray-50 border border-gray-200 text-gray-600"
+                    }`}>
+                      <XCircle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+                      <span>This redemption was cancelled and your points were refunded.</span>
+                    </div>
+                  )}
                 </div>
               );
             })}
           </div>
-        </div>
-      )}
+                </>
+              )}
+            </div>
+          </>
+        );
+      })()}
 
-      {/* Important Notice */}
       <div className={`rounded-xl p-6 border flex items-start gap-4 ${isDark ? "bg-amber-900 border-amber-700 text-amber-300" : "bg-amber-50 border-amber-200 text-amber-800"}`}>
         <AlertCircle className="w-6 h-6 flex-shrink-0 mt-0.5" />
         <div>

@@ -132,14 +132,15 @@ export default function RewardsTab({
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className={`sticky top-0 z-10 ${isDark ? 'bg-gray-900/95 border-gray-700' : 'bg-white/95 border-slate-200'} backdrop-blur-md border-b`}>
-        <div className="px-4 py-2">
-          <div className="flex items-center gap-2 mb-1">
-            <h2 className={`text-2xl font-bold ${isDark ? "text-gray-100" : "text-slate-800"}`}>
-              Rewards Management
-            </h2>
-          </div>
+      <div>
+        <div className="flex items-center gap-2 mb-2">
+          <h2 className={`text-2xl font-bold ${isDark ? "text-gray-100" : "text-slate-800"}`}>
+            Rewards Management
+          </h2>
         </div>
+        <p className={`${isDark ? "text-gray-400" : "text-slate-600"}`}>
+          Manage and configure redeemable rewards for users.
+        </p>
       </div>
 
       {/* Search and Filters Section */}

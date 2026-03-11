@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { FiUser, FiMenu, FiX, FiLogOut, FiChevronLeft, FiBell } from "react-icons/fi";
 import { useTheme } from "../contexts/ThemeContext";
-import { DashboardCalendar } from "../components/DashboardCalendar";
+import { DashboardCalendar, InlineCalendar } from "../components/DashboardCalendar";
 import NotificationCenter from "../components/NotificationCenter";
 import UpdateBanner from '../components/UpdateBanner';
 import SubmitWaste from "./SubmitWaste";
@@ -10,9 +10,8 @@ import Rewards from "./Rewards";
 import Forum from "./Forum";
 import Leaderboard from "./Leaderboard";
 import Transactions from "./Transactions";
-//import PublicVerification from "./PublicVerification";
 import { useLanguage } from "../contexts/LanguageContext";
-import logo from "../images/logo.png"; // Ensure this import exists
+import logo from "../images/logo.png";
 
 import {
   doc,
@@ -21,12 +20,12 @@ import {
   query,
   orderBy,
   limit,
-  getDocs,
   getDoc,
   where,
 } from "firebase/firestore";
 import { auth, db } from "../firebase";
-import { signOut } from "firebase/auth";
+import { signOut, onAuthStateChanged } from "firebase/auth";
+import { pushTab, setDefaultTab, TAB_BACK_EVENT } from "../BackButtonHandler";
 import {
   FaRecycle,
   FaGift,
@@ -51,18 +50,17 @@ import {
 
 // Menu items for web version
 const WEB_MENU_ITEMS = [
-  { id: "overview", title: "Home", icon: FaHome, color: "from-blue-500 to-indigo-600", bgColor: "bg-blue-500" },
+  { id: "overview", title: "Dashboard", icon: FaHome, color: "from-blue-500 to-indigo-600", bgColor: "bg-blue-500" },
   { id: "submit", title: "Submit", icon: FaRecycle, color: "from-emerald-500 to-teal-600", bgColor: "bg-emerald-500" },
   { id: "rewards", title: "Rewards", icon: FaGift, color: "from-amber-500 to-orange-600", bgColor: "bg-amber-500" },
   { id: "report", title: "Forum", icon: FaExclamationTriangle, color: "from-red-500 to-rose-600", bgColor: "bg-red-500" },
   { id: "leaderboard", title: "Leaderboard", icon: FaTrophy, color: "from-purple-500 to-pink-600", bgColor: "bg-purple-500" },
   { id: "transactions", title: "Transactions", icon: FaFileAlt, color: "from-slate-500 to-gray-600", bgColor: "bg-slate-500" },
-  //{ id: "ledger", title: "Public Ledger", icon: FaCubes, color: "from-indigo-500 to-purple-600", bgColor: "bg-indigo-500" }, 
 ];
 
 // Menu items for app version
 const APP_MENU_ITEMS = [
-  { id: "overview", title: "Home", icon: FaHome, color: "from-blue-500 to-indigo-600", bgColor: "bg-blue-500" },
+  { id: "overview", title: "Dashboard", icon: FaHome, color: "from-blue-500 to-indigo-600", bgColor: "bg-blue-500" },
   { id: "submit", title: "Submit", icon: FaRecycle, color: "from-emerald-500 to-teal-600", bgColor: "bg-emerald-500" },
   { id: "rewards", title: "Rewards", icon: FaGift, color: "from-amber-500 to-orange-600", bgColor: "bg-amber-500" },
   { id: "report", title: "Forum", icon: FaExclamationTriangle, color: "from-red-500 to-rose-600", bgColor: "bg-red-500" },
@@ -105,7 +103,21 @@ export default function Dashboard() {
   const [selectedUser, setSelectedUser] = useState(null);
   const [showModal, setShowModal] = useState(false);
   const [modalLoading, setModalLoading] = useState(false);
-  
+  // Stable auth uid from onAuthStateChanged — never null at listener setup
+  const [currentUserId, setCurrentUserId] = useState(null);
+  const [calendarOpen, setCalendarOpen] = useState(false);
+
+  // ── Analytics state ──────────────────────────────────────────────────────────
+  const [submissionStreak,  setSubmissionStreak]  = useState(0);
+  // Register home tab + listen for back-button tab pops
+  useEffect(() => {
+    setDefaultTab("/dashboard", "overview");
+    const handler = (e) => {
+      if (e.detail.pathname === "/dashboard") setActiveTab(e.detail.tabId);
+    };
+    window.addEventListener(TAB_BACK_EVENT, handler);
+    return () => window.removeEventListener(TAB_BACK_EVENT, handler);
+  }, []);
 
   useEffect(() => {
     const checkPWA = () => {
@@ -116,12 +128,19 @@ export default function Dashboard() {
     checkPWA();
   }, []);
 
+  // Resolve uid after Firebase rehydrates session — all listeners depend on this
   useEffect(() => {
+    const unsub = onAuthStateChanged(auth, (u) => {
+      setCurrentUserId(u ? u.uid : null);
+    });
+    return () => unsub();
+  }, []);
+
+  // Fetch Schedules (Live Sync)
+  useEffect(() => {
+    if (!currentUserId) return;
     const schedulesRef = collection(db, "collection_schedules");
-    const schedulesQuery = query(
-      schedulesRef,
-      where("isActive", "==", true)
-    );
+    const schedulesQuery = query(schedulesRef, where("isActive", "==", true));
 
     const unsubscribe = onSnapshot(
       schedulesQuery,
@@ -141,14 +160,12 @@ export default function Dashboard() {
     );
 
     return () => unsubscribe();
-  }, []);
+  }, [currentUserId]);
 
   useEffect(() => {
+    if (!currentUserId) return;
     const schedulesRef = collection(db, "submission_schedules");
-    const schedulesQuery = query(
-      schedulesRef,
-      where("isActive", "==", true)
-    );
+    const schedulesQuery = query(schedulesRef, where("isActive", "==", true));
 
     const unsubscribe = onSnapshot(
       schedulesQuery,
@@ -165,84 +182,87 @@ export default function Dashboard() {
     );
 
     return () => unsubscribe();
-  }, []); 
+  }, [currentUserId]); 
 
-  // Fetch leaderboard data
+  // Fetch leaderboard data (Live Sync)
   useEffect(() => {
-    const fetchLeaderboardData = async () => {
-      try {
-        setLoadingLeaderboard(true);
-        const usersRef = collection(db, "users");
-        const q = query(usersRef, orderBy("totalPoints", "desc"), limit(5));
-        const querySnapshot = await getDocs(q);
-        
-        const leaderboard = querySnapshot.docs.map((doc, index) => ({
-          id: doc.id,
-          rank: index + 1,
-          username: doc.data().username || "Anonymous",
-          points: doc.data().totalPoints || 0,
-          isCurrentUser: doc.id === auth.currentUser?.uid
-        }));
-        
-        setLeaderboardData(leaderboard);
-        setLoadingLeaderboard(false);
-      } catch (error) {
-        console.error("Error fetching leaderboard data:", error);
-        setLoadingLeaderboard(false);
-      }
-    };
+    if (!currentUserId) return;
+    setLoadingLeaderboard(true);
+    const usersRef = collection(db, "users");
+    const q = query(usersRef, orderBy("totalPoints", "desc"), limit(5));
+    
+    const unsubscribe = onSnapshot(q, (querySnapshot) => {
+      const leaderboard = querySnapshot.docs.map((doc, index) => ({
+        id: doc.id,
+        rank: index + 1,
+        username: doc.data().username || "Anonymous",
+        points: doc.data().totalPoints || 0,
+        isCurrentUser: doc.id === currentUserId
+      }));
+      
+      setLeaderboardData(leaderboard);
+      setLoadingLeaderboard(false);
+    }, (error) => {
+      console.error("Error fetching leaderboard data:", error);
+      setLoadingLeaderboard(false);
+    });
 
-    fetchLeaderboardData();
-  }, []);
+    return () => unsubscribe();
+  }, [currentUserId]);
 
-  // Fetch user submission data
+  // Fetch user submission data (Live Sync - calculates streak, weekly, and monthly)
   useEffect(() => {
-    const fetchSubmissionData = async () => {
-      const user = auth.currentUser;
-      if (!user) return;
+    if (!currentUserId) return;
 
-      try {
-        // Get current date and dates for month and week calculations
-        const now = new Date();
-        const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-        const startOfWeek = new Date(now);
-        startOfWeek.setDate(now.getDate() - now.getDay());
+    const now = new Date();
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const startOfWeek = new Date(now);
+    startOfWeek.setDate(now.getDate() - now.getDay());
+    startOfWeek.setHours(0,0,0,0);
+    
+    const wasteQuery = query(
+      collection(db, "waste_submissions"),
+      where("userId", "==", currentUserId)
+    );
+
+    const unsubscribe = onSnapshot(wasteQuery, (wasteSnapshot) => {
+      let monthlyCount = 0;
+      let weeklyCount = 0;
+      const submissionDays = new Set();
+      
+      wasteSnapshot.forEach((doc) => {
+        const data = doc.data();
+        // submittedAt is a Firestore Timestamp — must call .toDate()
+        const submissionDate = data.submittedAt?.toDate?.() ?? null;
         
-        // Fetch all waste submissions for the user
-        const wasteQuery = query(
-          collection(db, "wasteSubmissions"),
-          where("userId", "==", user.uid)
-        );
-        const wasteSnapshot = await getDocs(wasteQuery);
-        
-        let monthlyCount = 0;
-        let weeklyCount = 0;
-        
-        wasteSnapshot.forEach((doc) => {
-          const data = doc.data();
-          const submissionDate = data.submittedAt?.toDate();
-          
-          if (submissionDate) {
-            if (submissionDate >= startOfMonth) {
-              monthlyCount++;
-            }
-            if (submissionDate >= startOfWeek) {
-              weeklyCount++;
-            }
+        if (submissionDate && submissionDate.getTime() > 0) {
+          if (submissionDate >= startOfMonth) {
+            monthlyCount++;
           }
-        });
-        
-        setMonthlySubmissions(monthlyCount);
-        setWeeklySubmissions(weeklyCount);
-      } catch (error) {
-        console.error("Error fetching submission data:", error);
-      }
-    };
+          if (submissionDate >= startOfWeek) {
+            weeklyCount++;
+          }
+          submissionDays.add(submissionDate.toDateString());
+        }
+      });
+      
+      setMonthlySubmissions(monthlyCount);
+      setWeeklySubmissions(weeklyCount);
 
-    if (auth.currentUser) {
-      fetchSubmissionData();
-    }
-  }, []);
+      // Streak Calculation
+      let streak = 0;
+      const today = new Date();
+      for (let i = 0; i < 60; i++) {
+        const d = new Date(today);
+        d.setDate(today.getDate() - i);
+        if (submissionDays.has(d.toDateString())) streak++;
+        else if (i > 0) break; // allow today to be missing
+      }
+      setSubmissionStreak(streak);
+    });
+
+    return () => unsubscribe();
+  }, [currentUserId]);
 
   // Generate achievements based on points
   const generateAchievements = (points) => {
@@ -259,15 +279,12 @@ export default function Dashboard() {
   const handleUserClick = async (user, rank) => {
     setModalLoading(true);
     setShowModal(true);
-    
     try {
       const userDocRef = doc(db, 'users', user.id);
       const userDoc = await getDoc(userDocRef);
-      
       if (userDoc.exists()) {
         const userData = userDoc.data();
         const achievements = generateAchievements(userData.totalPoints || 0);
-        
         setSelectedUser({
           ...user,
           ...userData,
@@ -322,7 +339,6 @@ export default function Dashboard() {
 
     let nearestCollection = null;
     let minDaysAway = Infinity;
-
     for (const schedule of collectionSchedules) {
       const scheduleDayNum = DAY_MAP[schedule.day.toLowerCase()];
       
@@ -330,7 +346,6 @@ export default function Dashboard() {
       const scheduleTime = startHours * 60 + startMinutes;
 
       let daysUntil = scheduleDayNum - currentDay;
-      
       if (daysUntil < 0 || (daysUntil === 0 && currentTime >= scheduleTime)) {
         daysUntil += 7;
       }
@@ -340,14 +355,12 @@ export default function Dashboard() {
         const collectionDate = new Date(today);
         collectionDate.setDate(today.getDate() + daysUntil);
         collectionDate.setHours(startHours, startMinutes, 0, 0);
-        
         nearestCollection = {
           date: collectionDate,
           schedule: schedule
         };
       }
     }
-
     return nearestCollection;
   };
 
@@ -362,7 +375,6 @@ export default function Dashboard() {
 
     let nearestSubmission = null;
     let minDaysAway = Infinity;
-
     for (const schedule of submissionSchedules) {
       const scheduleDayNum = DAY_MAP[schedule.day.toLowerCase()];
       
@@ -370,9 +382,8 @@ export default function Dashboard() {
       const scheduleTime = startHours * 60 + startMinutes;
 
       let daysUntil = scheduleDayNum - currentDay;
-      
       if (daysUntil < 0 || (daysUntil === 0 && currentTime >= scheduleTime)) {
-        daysUntil += 7; 
+        daysUntil += 7;
       }
 
       if (daysUntil < minDaysAway) {
@@ -380,25 +391,19 @@ export default function Dashboard() {
         const submissionDate = new Date(today);
         submissionDate.setDate(today.getDate() + daysUntil);
         submissionDate.setHours(startHours, startMinutes, 0, 0);
-        
         nearestSubmission = {
           date: submissionDate,
           schedule: schedule
         };
       }
     }
-
     return nearestSubmission;
   };
 
+  // Live User Points/Name sync
   useEffect(() => {
-    const user = auth.currentUser;
-    if (!user) {
-      setLoadingUser(false);
-      setError("No authenticated user");
-      return;
-    }
-    const userRef = doc(db, "users", user.uid);
+    if (!currentUserId) return;
+    const userRef = doc(db, "users", currentUserId);
     const unsubscribeUser = onSnapshot(
       userRef,
       (docSnap) => {
@@ -422,86 +427,120 @@ export default function Dashboard() {
     return () => {
       unsubscribeUser();
     };
-  }, []);
+  }, [currentUserId]);
 
+  // Fetch Recent Activity (Live Sync)
   useEffect(() => {
-    const fetchRecentActivity = async () => {
-      const user = auth.currentUser;
-      if (!user) return;
+    if (!currentUserId) return;
+    setLoadingActivity(true);
 
-      try {
-        setLoadingActivity(true);
-        
-        const wasteQuery = query(
-          collection(db, "wasteSubmissions"),
-          orderBy("submittedAt", "desc"),
-          limit(5)
-        );
-        const wasteSnapshot = await getDocs(wasteQuery);
-        
-        const transactionsQuery = query(
-          collection(db, "transactions"),
-          orderBy("createdAt", "desc"),
-          limit(5)
-        );
-        const transactionsSnapshot = await getDocs(transactionsQuery);
-
-        const activities = [];
-        
-        wasteSnapshot.forEach((doc) => {
-          const data = doc.data();
-          if (data.userId === user.uid) {
-            activities.push({
-              id: doc.id,
-              type: "waste_submission",
-              description: `Submitted ${data.wasteType || "waste"} - ${data.weight || 0}kg`,
-              points: data.pointsEarned || 0,
-              timestamp: data.submittedAt?.toDate() || new Date(),
-              icon: FaRecycle,
-              color: "emerald"
-            });
-          }
-        });
-
-        transactionsSnapshot.forEach((doc) => {
-          const data = doc.data();
-          if (data.userId === user.uid) {
-            activities.push({
-              id: doc.id,
-              type: data.type === "redemption" ? "reward_redemption" : "points_earned",
-              description: data.type === "redemption" 
-                ? `Redeemed ${data.rewardName || "reward"}` 
-                : `Earned ${data.amount || 0} points`,
-              points: data.type === "redemption" ? -Math.abs(data.amount || 0) : (data.amount || 0),
-              timestamp: data.createdAt?.toDate() || new Date(),
-              icon: data.type === "redemption" ? FaGift : FaTrophy,
-              color: data.type === "redemption" ? "amber" : "blue"
-            });
-          }
-        });
-
-        activities.sort((a, b) => b.timestamp - a.timestamp);
-        
-        setRecentActivity(activities.slice(0, 5));
-        setLoadingActivity(false);
-      } catch (error) {
-        console.error("Error fetching activity:", error);
-        setLoadingActivity(false);
-      }
+    const uid = currentUserId;
+    const toMs = (ts) => {
+      if (!ts) return 0;
+      if (typeof ts.toMillis === "function") return ts.toMillis();
+      if (typeof ts.toDate === "function") return ts.toDate().getTime();
+      if (typeof ts.seconds === "number") return ts.seconds * 1000;
+      return Number(ts) || 0;
     };
 
-    if (auth.currentUser) {
-      fetchRecentActivity();
-    }
-  }, []);
+    const wasteQuery  = query(collection(db, "waste_submissions"),  where("userId", "==", uid));
+    const transQuery  = query(collection(db, "point_transactions"), where("userId", "==", uid));
+    const redeemQuery = query(collection(db, "redemptions"),        where("userId", "==", uid));
+
+    // Use an object so every listener closure always reads the latest array
+    // from its siblings — plain `let` variables get stale when closures capture
+    // them at definition time and one fires before the others have loaded.
+    const acts = { waste: [], trans: [], redeem: [] };
+
+    const merge = () => {
+      const combined = [...acts.waste, ...acts.trans, ...acts.redeem];
+      combined.sort((a, b) => toMs(b.rawTimestamp) - toMs(a.rawTimestamp));
+      setRecentActivity(combined.slice(0, 5));
+      setLoadingActivity(false);
+    };
+
+    const unsubWaste = onSnapshot(wasteQuery, (snapshot) => {
+      acts.waste = [];
+      snapshot.forEach((docSnap) => {
+        const d = docSnap.data();
+        const ts = d.submittedAt;
+        if (!ts || toMs(ts) === 0) return;
+        const weight    = Number(d.weight || d.totalWeight || 0);
+        const pts       = Number(d.points || d.pointsEarned || 0);
+        const typeName  = d.type || d.wasteType || "Waste";
+        if (!typeName && weight <= 0) return;
+        acts.waste.push({
+          id:           docSnap.id,
+          type:         "waste_submission",
+          description:  `Submitted ${typeName}${weight > 0 ? ` — ${weight}kg` : ""}`,
+          points:       pts,
+          rawTimestamp: ts,
+          timestamp:    typeof ts.toDate === "function" ? ts.toDate() : new Date(toMs(ts)),
+          icon:         FaRecycle,
+          color:        "emerald",
+        });
+      });
+      merge();
+    });
+
+    const unsubTrans = onSnapshot(transQuery, (snapshot) => {
+      acts.trans = [];
+      snapshot.forEach((docSnap) => {
+        const d = docSnap.data();
+        const ts = d.timestamp || d.createdAt;
+        if (!ts || toMs(ts) === 0) return;
+        const pts          = Number(d.points || d.amount || 0);
+        const isRedeemed   = d.type === "points_redeemed";
+        const isAwarded    = d.type === "points_awarded";
+        if (!isAwarded && !isRedeemed) return;
+        if (pts <= 0 && isAwarded) return;
+        acts.trans.push({
+          id:           docSnap.id,
+          type:         isRedeemed ? "reward_redemption" : "points_earned",
+          description:  d.description || (isRedeemed ? `Redeemed reward` : `Points awarded`),
+          points:       isRedeemed ? -Math.abs(pts) : pts,
+          rawTimestamp: ts,
+          timestamp:    typeof ts.toDate === "function" ? ts.toDate() : new Date(toMs(ts)),
+          icon:         isRedeemed ? FaGift : FaTrophy,
+          color:        isRedeemed ? "amber" : "blue",
+        });
+      });
+      merge();
+    });
+
+    const unsubRedeem = onSnapshot(redeemQuery, (snapshot) => {
+      acts.redeem = [];
+      snapshot.forEach((docSnap) => {
+        const d = docSnap.data();
+        const ts = d.redeemedAt || d.createdAt;
+        if (!ts || toMs(ts) === 0) return;
+        const cost = Number(d.cost || d.points || d.amount || 0);
+        acts.redeem.push({
+          id:           docSnap.id,
+          type:         "reward_redemption",
+          description:  `Redeemed: ${d.rewardName || "reward"}`,
+          points:       -Math.abs(cost),
+          rawTimestamp: ts,
+          timestamp:    typeof ts.toDate === "function" ? ts.toDate() : new Date(toMs(ts)),
+          icon:         FaGift,
+          color:        "amber",
+        });
+      });
+      merge();
+    });
+
+    return () => {
+      unsubWaste();
+      unsubTrans();
+      unsubRedeem();
+    };
+  }, [currentUserId]);
 
   useEffect(() => {
     const timer = setInterval(() => setCurrentTime(new Date()), 1000);
     return () => clearInterval(timer);
   }, []);
 
-  // ---------------- MODIFIED: INITIALIZATION LOADING SCREEN ---------------- //
-  // Replaced simple text "Loading..." with the animated logo to match App.js
   if (!themeContext) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900 transition-colors duration-300">
@@ -534,6 +573,7 @@ export default function Dashboard() {
   const handleNavigation = (item) => {
     setActiveTab(item.id);
     setSidebarOpen(false);
+    pushTab("/dashboard", item.id);
   };
 
   const handleLogout = async () => {
@@ -587,14 +627,12 @@ export default function Dashboard() {
   // Find user's rank in leaderboard
   const userRank = leaderboardData.findIndex(user => user.isCurrentUser) + 1;
 
-  // PWA MODE - Mobile App Design
   if (isPWA) {
     return (
-      <div className={`min-h-screen pb-32 ${isDark ? 'bg-gray-950' : 'bg-gray-50'}`}>
-        <div className={`sticky top-0 z-50 ${isDark ? 'bg-gray-900/95' : 'bg-white/95'} border-b ${isDark ? 'border-gray-800' : 'border-gray-200'}`}>
+      <div className={`min-h-screen ${isDark ? 'bg-gray-950' : 'bg-gray-50'} ${calendarOpen ? 'overflow-hidden' : ''}`}>
+        <div className={`sticky top-0 z-[1000] ${isDark ? 'bg-gray-900/95' : 'bg-white/95'} border-b ${isDark ? 'border-gray-800' : 'border-gray-200'}`}>
           <div className="px-4 py-3 flex items-center justify-between">
             <div className="flex items-center gap-3">
-              {/* LOGO IMPLEMENTATION */}
               <img 
                 src={logo} 
                 alt="EcoSort Logo" 
@@ -610,7 +648,7 @@ export default function Dashboard() {
               </div>
             </div>
             <div className="flex items-center gap-2">
-              <NotificationCenter userId={auth.currentUser?.uid} />
+              <NotificationCenter userId={currentUserId} />
               <button
                 onClick={() => navigate("/profile")}
                 className="w-10 h-10 rounded-full bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center shadow-lg active:scale-95 transition-transform"
@@ -621,10 +659,9 @@ export default function Dashboard() {
           </div>
         </div>
 
-        <div className="px-4 pt-4">
+        <div className="px-4 pt-4 pb-28">
           {activeTab === "overview" ? (
             <div className="space-y-4">
-              {/* Enhanced Eco Points Card with Leaderboard Integration */}
               <div className={`rounded-3xl overflow-hidden shadow-2xl ${isDark ? 'bg-gradient-to-br from-emerald-600 to-teal-700' : 'bg-gradient-to-br from-emerald-500 to-teal-600'}`}>
                 <div className="p-6 relative overflow-hidden">
                   <div className="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-full -mr-16 -mt-16"></div>
@@ -641,7 +678,6 @@ export default function Dashboard() {
                         </div>
                       </div>
                       
-                      {/* Trophy icon positioned side by side with points */}
                       <div className="flex flex-col items-center">
                         <button
                           onClick={() => setShowLeaderboard(!showLeaderboard)}
@@ -661,7 +697,6 @@ export default function Dashboard() {
                   </div>
                 </div>
                 
-                {/* Leaderboard Section */}
                 {showLeaderboard && (
                   <div className={`${isDark ? 'bg-gray-900/90' : 'bg-white/90'} backdrop-blur-sm p-4 border-t ${isDark ? 'border-emerald-700' : 'border-emerald-400'}`}>
                     <div className="flex items-center justify-between mb-3">
@@ -708,141 +743,136 @@ export default function Dashboard() {
                 )}
               </div>
 
-              {/* PWA: Added Blockchain Status Card *
-              <div 
-                onClick={() => setActiveTab('ledger')}
-                className={`rounded-3xl p-5 ${isDark ? 'bg-indigo-900/30 border border-indigo-800' : 'bg-indigo-50 border border-indigo-100'} shadow-lg cursor-pointer active:scale-95 transition-transform`}
-              >
-                <div className="flex items-center justify-between">
-                   <div className="flex items-center gap-3">
-                      <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${isDark ? 'bg-indigo-500/20 text-indigo-300' : 'bg-indigo-100 text-indigo-600'}`}>
-                          <FaCubes className="text-lg" />
-                      </div>
-                      <div>
-                        <h3 className={`text-base font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>
-                          Public Ledger
-                        </h3>
-                        <p className={`text-xs ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
-                          All data is auditable & transparent
-                        </p>
-                      </div>
-                   </div>
-                   <FaLink className={`text-sm ${isDark ? 'text-indigo-400' : 'text-indigo-400'}`} />
+              <div className="grid grid-cols-2 gap-3">
+                <div className={`rounded-2xl p-4 ${isDark ? 'bg-gray-900 border border-gray-800' : 'bg-white border border-gray-200'} shadow-sm`}>
+                  <p className={`text-xs font-semibold mb-1 ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>This Month</p>
+                  <p className={`text-2xl font-black ${isDark ? 'text-white' : 'text-gray-900'}`}>{monthlySubmissions}</p>
+                  <p className={`text-xs ${isDark ? 'text-emerald-400' : 'text-emerald-600'} font-medium`}>submissions</p>
                 </div>
-              </div>*/}
+                <div className={`rounded-2xl p-4 ${isDark ? 'bg-gray-900 border border-gray-800' : 'bg-white border border-gray-200'} shadow-sm`}>
+                  <p className={`text-xs font-semibold mb-1 ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>This Week</p>
+                  <p className={`text-2xl font-black ${isDark ? 'text-white' : 'text-gray-900'}`}>{weeklySubmissions}</p>
+                  <p className={`text-xs ${isDark ? 'text-blue-400' : 'text-blue-600'} font-medium`}>submissions</p>
+                </div>
+                <div className={`rounded-2xl p-4 ${isDark ? 'bg-gray-900 border border-gray-800' : 'bg-white border border-gray-200'} shadow-sm`}>
+                  <p className={`text-xs font-semibold mb-1 ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>Your Streak</p>
+                  <p className={`text-2xl font-black ${submissionStreak >= 3 ? 'text-orange-500' : isDark ? 'text-white' : 'text-gray-900'}`}>
+                    {submissionStreak > 0 ? `🔥 ${submissionStreak}` : '—'}
+                  </p>
+                  <p className={`text-xs ${isDark ? 'text-gray-400' : 'text-gray-500'} font-medium`}>day streak</p>
+                </div>
+                <div className={`rounded-2xl p-4 ${isDark ? 'bg-gray-900 border border-gray-800' : 'bg-white border border-gray-200'} shadow-sm`}>
+                  <p className={`text-xs font-semibold mb-1 ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>Your Rank</p>
+                  <p className={`text-2xl font-black ${isDark ? 'text-purple-400' : 'text-purple-600'}`}>
+                    {userRank ? `#${userRank}` : '—'}
+                  </p>
+                  <p className={`text-xs ${isDark ? 'text-gray-400' : 'text-gray-500'} font-medium`}>leaderboard</p>
+                </div>
+              </div>
 
-              {/* UPDATED CALENDAR CARD */}
               <div className={`rounded-3xl p-5 ${isDark ? 'bg-gray-900 border border-gray-800' : 'bg-white border border-gray-200'} shadow-lg`}>
-                <div className="flex justify-between items-start mb-4">
-                  <div>
-                    <h3 className={`text-base font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>
-                      Calendar
-                    </h3>
-                   
+                {/* Header */}
+                <div className="flex items-center justify-between mb-1">
+                  <h3 className={`text-base font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>
+                    Schedule Calendar
+                  </h3>
+                  <DashboardCalendar
+                    selectedDate={selectedDate}
+                    setSelectedDate={setSelectedDate}
+                    isDark={isDark}
+                    schedules={allSchedules}
+                    onOpenChange={setCalendarOpen}
+                  />
+                </div>
+                <p className={`text-xs mb-3 ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
+                  View upcoming waste collection and submission schedules in your area.
+                </p>
+                {/* Legend */}
+                <div className="flex items-center gap-4">
+                  <div className="flex items-center gap-1.5">
+                    <div className="w-2.5 h-2.5 rounded-full bg-blue-500 flex-shrink-0" />
+                    <span className={`text-[11px] font-medium ${isDark ? 'text-blue-400' : 'text-blue-600'}`}>Collection Day</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <div className="w-2.5 h-2.5 rounded-full bg-green-500 flex-shrink-0" />
+                    <span className={`text-[11px] font-medium ${isDark ? 'text-green-400' : 'text-green-600'}`}>Submission Day</span>
                   </div>
                 </div>
-
-                {/* Reminder Alert if there is an event today */}
-                {((nextCollection && isToday(nextCollection.date)) || (nextSubmission && isToday(nextSubmission.date))) && (
-                   <div className={`mb-4 p-3 rounded-2xl flex items-center gap-3 ${isDark ? 'bg-emerald-900/30 border border-emerald-800' : 'bg-emerald-50 border border-emerald-100'}`}>
-                      <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${isDark ? 'bg-emerald-500' : 'bg-emerald-500'}`}>
-                        <FaBell className="text-white text-xs" />
-                      </div>
-                      <div>
-                         <p className={`text-xs font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>
-                           Happening Today!
-                         </p>
-                         <p className={`text-[10px] ${isDark ? 'text-gray-300' : 'text-gray-600'}`}>
-                           {nextCollection && isToday(nextCollection.date) ? "Waste Collection Day" : "Submission Center Open"}
-                         </p>
-                      </div>
-                   </div>
-                )}
-
-                <DashboardCalendar
-                  selectedDate={selectedDate}
-                  setSelectedDate={setSelectedDate}
-                  isDark={isDark}
-                  schedules={allSchedules}
-                />
               </div>
 
               {nextCollection && (
-  <div className={`rounded-3xl p-5 ${isDark ? 'bg-gray-900 border border-gray-800' : 'bg-white border border-gray-200'} shadow-lg`}>
-    <div className="flex items-center gap-3 mb-4">
-      <div>
-        <h3 className={`text-base font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>
-          Garbage Collection
-        </h3>
-        <p className={`text-xs ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
-          {isToday(nextCollection.date) ? 'Today' : nextCollection.date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
-        </p>
-      </div>
-    </div>
-    {/* Added items-stretch to the parent flex container */}
-    <div className="flex items-stretch gap-3">
-      {/* Added h-full to the inner boxes */}
-      <div className={`flex-1 rounded-2xl p-4 h-full ${isDark ? 'bg-gray-800' : 'bg-gray-50'}`}>
-        <div className="flex items-center gap-2 mb-1">
-          <span className={`text-xs font-medium ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>Collection Time</span>
-        </div>
-        <p className={`text-sm font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>
-          {formatTime(nextCollection.schedule.startTime)}
-        </p>
-      </div>
-      {nextCollection.schedule.area && (
-        <div className={`flex-1 rounded-2xl p-4 h-full ${isDark ? 'bg-gray-800' : 'bg-gray-50'}`}>
-          <div className="flex items-center gap-2 mb-1">
-            <span className={`text-xs font-medium ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>Location</span>
-          </div>
-          <p className={`text-sm font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>
-            {nextCollection.schedule.area}
-            {nextCollection.schedule.barangay && `, ${nextCollection.schedule.barangay}`}
-          </p>
-        </div>
-      )}
-    </div>
-  </div>
-)}
-              
+                <div className={`rounded-3xl p-5 ${isDark ? 'bg-gray-900 border border-gray-800' : 'bg-white border border-gray-200'} shadow-lg`}>
+                  <div className="flex items-center gap-3 mb-4">
+                    <div>
+                      <h3 className={`text-base font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>
+                        Garbage Collection
+                      </h3>
+                      <p className={`text-xs ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
+                        {isToday(nextCollection.date) ? 'Today' : nextCollection.date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-stretch gap-3">
+                    <div className={`flex-1 rounded-2xl p-4 h-full ${isDark ? 'bg-gray-800' : 'bg-gray-50'}`}>
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className={`text-xs font-medium ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>Collection Time</span>
+                      </div>
+                      <p className={`text-sm font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>
+                        {formatTime(nextCollection.schedule.startTime)}
+                      </p>
+                    </div>
+                    {nextCollection.schedule.area && (
+                      <div className={`flex-1 rounded-2xl p-4 h-full ${isDark ? 'bg-gray-800' : 'bg-gray-50'}`}>
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className={`text-xs font-medium ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>Location</span>
+                        </div>
+                        <p className={`text-sm font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>
+                          {nextCollection.schedule.area}
+                          {nextCollection.schedule.barangay && `, ${nextCollection.schedule.barangay}`}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+                            
               {nextSubmission && (
-  <div className={`rounded-3xl p-5 ${isDark ? 'bg-gray-900 border border-gray-800' : 'bg-white border border-gray-200'} shadow-lg`}>
-    <div className="flex items-center gap-3 mb-4">
-      <div>
-        <h3 className={`text-base font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>
-          Recyclable Waste Submission
-        </h3>
-        <p className={`text-xs ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
-          {isToday(nextSubmission.date) ? 'Today' : nextSubmission.date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
-        </p>
-      </div>
-    </div>
-    {/* Added items-stretch here */}
-    <div className="flex items-stretch gap-3">
-      <div className={`flex-1 rounded-2xl p-4 h-full ${isDark ? 'bg-gray-800' : 'bg-gray-50'}`}>
-        <div className="flex items-center gap-2 mb-1">
-          <span className={`text-xs font-medium ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>Operating Hours</span>
-        </div>
-        <p className={`text-sm font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>
-          {formatTimeRange(nextSubmission.schedule.startTime, nextSubmission.schedule.endTime)}
-        </p>
-      </div>
-      {nextSubmission.schedule.area && (
-        <div className={`flex-1 rounded-2xl p-4 h-full ${isDark ? 'bg-gray-800' : 'bg-gray-50'}`}>
-          <div className="flex items-center gap-2 mb-1">
-            <span className={`text-xs font-medium ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>Location</span>
-          </div>
-          <p className={`text-sm font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>
-            {nextSubmission.schedule.area}
-            {nextSubmission.schedule.barangay && `, ${nextSubmission.schedule.barangay}`}
-          </p>
-        </div>
-      )}
-    </div>
-  </div>
-)}
+                <div className={`rounded-3xl p-5 ${isDark ? 'bg-gray-900 border border-gray-800' : 'bg-white border border-gray-200'} shadow-lg`}>
+                  <div className="flex items-center gap-3 mb-4">
+                    <div>
+                      <h3 className={`text-base font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>
+                        Recyclable Waste Submission
+                      </h3>
+                      <p className={`text-xs ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
+                        {isToday(nextSubmission.date) ? 'Today' : nextSubmission.date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-stretch gap-3">
+                    <div className={`flex-1 rounded-2xl p-4 h-full ${isDark ? 'bg-gray-800' : 'bg-gray-50'}`}>
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className={`text-xs font-medium ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>Operating Hours</span>
+                      </div>
+                      <p className={`text-sm font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>
+                        {formatTimeRange(nextSubmission.schedule.startTime, nextSubmission.schedule.endTime)}
+                      </p>
+                    </div>
+                    {nextSubmission.schedule.area && (
+                      <div className={`flex-1 rounded-2xl p-4 h-full ${isDark ? 'bg-gray-800' : 'bg-gray-50'}`}>
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className={`text-xs font-medium ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>Location</span>
+                        </div>
+                        <p className={`text-sm font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>
+                          {nextSubmission.schedule.area}
+                          {nextSubmission.schedule.barangay && `, ${nextSubmission.schedule.barangay}`}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
 
-              {recentActivity.length > 0 && (
+              {recentActivity.length > 0 ? (
                 <div>
                   <h3 className={`text-sm font-bold mb-3 px-1 ${isDark ? 'text-gray-400' : 'text-gray-500'} uppercase tracking-wider`}>
                     Recent Activity
@@ -868,6 +898,17 @@ export default function Dashboard() {
                     ))}
                   </div>
                 </div>
+              ) : !loadingActivity && (
+                <div>
+                  <h3 className={`text-sm font-bold mb-3 px-1 ${isDark ? 'text-gray-400' : 'text-gray-500'} uppercase tracking-wider`}>
+                    Recent Activity
+                  </h3>
+                  <div className={`rounded-3xl p-6 text-center ${isDark ? 'bg-gray-900 border border-gray-800' : 'bg-white border border-gray-200'} shadow-lg`}>
+                    <FaRecycle className={`text-3xl mx-auto mb-2 ${isDark ? 'text-gray-600' : 'text-gray-300'}`} />
+                    <p className={`text-sm font-medium ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>No activity yet</p>
+                    <p className={`text-xs mt-1 ${isDark ? 'text-gray-600' : 'text-gray-400'}`}>Submit waste to get started!</p>
+                  </div>
+                </div>
               )}
             </div>
           ) : (
@@ -877,7 +918,6 @@ export default function Dashboard() {
               {activeTab === "report" && <Forum sidebarOpen={false} />}
               {activeTab === "leaderboard" && <Leaderboard />}
               {activeTab === "transactions" && <Transactions />}
-              {/*{activeTab === "ledger" && <PublicVerification />}*/}
             </div>
           )}
         </div>
@@ -915,7 +955,6 @@ export default function Dashboard() {
         </div>
          <UpdateBanner />
          
-         {/* Added Modal here for App Version */}
          {showModal && (
             <div
               className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fadeIn"
@@ -927,7 +966,6 @@ export default function Dashboard() {
                 }`}
                 onClick={(e) => e.stopPropagation()}
               >
-                {/* Close Button */}
                 <button
                   onClick={closeModal}
                   className={`absolute top-4 right-4 z-10 p-2 rounded-full transition-all duration-300 hover:scale-110 ${
@@ -946,10 +984,8 @@ export default function Dashboard() {
                   </div>
                 ) : selectedUser ? (
                   <>
-                    {/* Header Section */}
                     <div className={`p-8 border-b ${isDark ? "border-gray-700" : "border-gray-200"}`}>
                       <div className="flex flex-col sm:flex-row items-center gap-6">
-                        {/* Profile Picture */}
                         <div className="relative">
                           {selectedUser.profileUrl ? (
                             <img
@@ -962,7 +998,6 @@ export default function Dashboard() {
                               <FiUser size={36} className="text-gray-600" />
                             </div>
                           )}
-                          {/* Rank Badge */}
                           <div className={`absolute -bottom-2 left-1/2 transform -translate-x-1/2 px-3 py-1 rounded-full text-xs font-bold shadow-lg ${
                             selectedUser.rank === 1
                               ? "bg-gradient-to-r from-yellow-400 to-yellow-500 text-yellow-900"
@@ -978,7 +1013,6 @@ export default function Dashboard() {
                           </div>
                         </div>
 
-                        {/* User Info */}
                         <div className="flex-1 text-center sm:text-left">
                           <h2 className={`text-2xl font-bold mb-2 ${isDark ? "text-gray-100" : "text-gray-900"}`}>
                             {selectedUser.username || selectedUser.email || 'Anonymous'}
@@ -1004,7 +1038,6 @@ export default function Dashboard() {
                       </div>
                     </div>
 
-                    {/* Achievements Section */}
                     <div className="p-8">
                       <div className="flex items-center justify-between mb-6">
                         <h3 className={`text-xl font-bold flex items-center ${isDark ? "text-gray-200" : "text-gray-800"}`}>
@@ -1031,7 +1064,6 @@ export default function Dashboard() {
                                   }`
                             }`}
                           >
-                            {/* Unlocked indicator */}
                             {achievement.unlocked && (
                               <div className="absolute top-2 right-2 bg-green-500 rounded-full p-1">
                                 <FaCheckCircle className="w-3 h-3 text-white" />
@@ -1066,7 +1098,6 @@ export default function Dashboard() {
                                   {achievement.description}
                                 </p>
 
-                                {/* Progress for locked achievements */}
                                 {!achievement.unlocked && (
                                   <div className="mt-2">
                                     <div className={`w-full rounded-full h-1 ${isDark ? "bg-gray-600" : "bg-gray-200"}`}>
@@ -1088,7 +1119,6 @@ export default function Dashboard() {
                         ))}
                       </div>
 
-                      {/* Motivational Message */}
                       <div className={`mt-6 p-4 rounded-xl ${isDark ? "bg-blue-900/20 border border-blue-700/30" : "bg-blue-50 border border-blue-200"}`}>
                         <p className={`text-center text-sm ${isDark ? "text-blue-300" : "text-blue-800"}`}>
                           {selectedUser.achievements?.filter(a => a.unlocked).length === selectedUser.achievements?.length
@@ -1108,57 +1138,54 @@ export default function Dashboard() {
     );
   }
 
-  // WEB MODE - Desktop Design
+  const sidebarGroups = [
+    {
+      group: "Main",
+      items: WEB_MENU_ITEMS.filter(m => ["overview"].includes(m.id)),
+    },
+    {
+      group: "Actions",
+      items: WEB_MENU_ITEMS.filter(m => ["submit", "rewards"].includes(m.id)),
+    },
+    {
+      group: "Community",
+      items: WEB_MENU_ITEMS.filter(m => ["report", "leaderboard"].includes(m.id)),
+    },
+    {
+      group: "History",
+      items: WEB_MENU_ITEMS.filter(m => ["transactions"].includes(m.id)),
+    },
+  ];
+
+  const activeMenuItem = WEB_MENU_ITEMS.find(m => m.id === activeTab);
+
   return (
-    <div
-      className={`min-h-screen transition-colors duration-500 ${
-        isDark
-          ? "bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 text-gray-200"
-          : "bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-100 text-gray-900"
-      }`}
-    >
-     <header
-        className={`lg:hidden sticky top-0 z-30 border-b ${
-          isDark
-            ? "bg-gray-800/90 text-gray-200 border-gray-700"
-            : "bg-white/90 text-slate-900 border-slate-200/50"
-        } shadow-sm`}
-      >
+    <div className={`min-h-screen ${isDark ? "bg-gray-900" : "bg-gradient-to-br from-slate-50 via-gray-50 to-slate-100"}`}>
+
+      <header className={`lg:hidden backdrop-blur-md fixed top-0 left-0 right-0 z-40 border-b ${
+        isDark ? "bg-gray-800/90 text-gray-200 border-gray-700" : "bg-white/90 text-slate-900 border-slate-200/50"
+      } shadow-sm`}>
         <div className="px-4">
           <div className="flex justify-between items-center py-3">
             <div className="flex items-center space-x-3">
               <button
                 onClick={() => setSidebarOpen(true)}
-                className={`p-2 rounded-lg ${
-                  isDark ? "hover:bg-gray-700" : "hover:bg-gray-100"
-                } transition-colors`}
+                className={`p-2 rounded-lg ${isDark ? "hover:bg-gray-700" : "hover:bg-gray-100"} transition-colors`}
               >
                 <FiMenu className="w-5 h-5" />
               </button>
               <div className="flex items-center space-x-2">
-                {/* LOGO IMPLEMENTATION */}
-                <img 
-                  src={logo} 
-                  alt="EcoSort Logo" 
-                  className="w-8 h-8 rounded-lg object-cover shadow-lg" 
-                />
-                <h1
-                  className={`text-base font-bold bg-gradient-to-r ${
-                    isDark ? "from-gray-100 to-gray-400" : "from-slate-800 to-slate-600"
-                  } bg-clip-text text-transparent`}
-                >
+                <img src={logo} alt="EcoSort Logo" className="w-8 h-8 rounded-lg object-cover shadow-lg" />
+                <h1 className={`text-base font-bold bg-gradient-to-r ${isDark ? "from-gray-100 to-gray-400" : "from-slate-800 to-slate-600"} bg-clip-text text-transparent`}>
                   ECOSORT
                 </h1>
               </div>
             </div>
             <div className="flex items-center space-x-2">
-              <NotificationCenter userId={auth.currentUser?.uid} />
-              <div
-                className="flex items-center space-x-2 cursor-pointer group"
-                onClick={() => navigate("/profile")}
-              >
-                <div className="w-7 h-7 rounded-full bg-gradient-to-br from-emerald-100 to-teal-100 flex items-center justify-center group-hover:shadow-md transition-all">
-                  <FiUser className="text-emerald-600 w-4 h-4" />
+              <NotificationCenter userId={currentUserId} />
+              <div className="flex items-center space-x-2 cursor-pointer group" onClick={() => navigate("/profile")}>
+                <div className="w-7 h-7 rounded-full bg-gradient-to-br from-emerald-100 to-teal-100 dark:from-emerald-900/40 dark:to-teal-900/40 flex items-center justify-center group-hover:shadow-md transition-all">
+                  <FiUser className={`w-4 h-4 ${isDark ? "text-emerald-400" : "text-emerald-600"}`} />
                 </div>
               </div>
             </div>
@@ -1166,188 +1193,236 @@ export default function Dashboard() {
         </div>
       </header>
 
-      <div className="flex">
-        <aside
-          className={`fixed inset-y-0 left-0 z-50 transform transition-all duration-300 ease-in-out lg:translate-x-0 ${
-            sidebarOpen ? "translate-x-0" : "-translate-x-full"
-          } ${sidebarCollapsed ? "lg:w-20" : "lg:w-64"} w-64 ${
-            isDark ? "bg-gray-800 border-gray-700" : "bg-white border-gray-200"
-          } border-r flex flex-col h-screen`}
-        >
-          <div className={`flex items-center justify-between p-6 border-b ${isDark ? "border-gray-700" : "border-gray-200"} flex-shrink-0`}>
-            {!sidebarCollapsed && (
-              <div className="flex items-center space-x-3">
-                {/* LOGO IMPLEMENTATION */}
-                <img 
-                  src={logo} 
-                  alt="EcoSort Logo" 
-                  className="w-10 h-10 rounded-xl object-cover shadow-lg" 
-                />
+      <div className="flex lg:h-screen lg:overflow-hidden pt-[56px] lg:pt-0">
+
+        <aside className={`fixed inset-y-0 left-0 z-50 w-72 transform transition-all duration-300 ease-in-out ${
+          sidebarOpen ? "translate-x-0" : "-translate-x-full"
+        } lg:translate-x-0 lg:static ${
+          isDark ? "bg-gradient-to-b from-gray-800 to-gray-900 border-r border-gray-700" : "bg-white border-r border-gray-200 shadow-xl"
+        }`}>
+          <div className="h-full flex flex-col">
+
+            <div className={`p-6 border-b ${isDark ? "border-gray-700" : "border-gray-200"}`}>
+              <div className="flex items-center gap-3">
+                <img src={logo} alt="EcoSort Logo" className="w-12 h-12 rounded-xl shadow-lg object-cover" />
                 <div>
-                  <h2 className={`font-bold text-lg ${isDark ? "text-white" : "text-gray-900"}`}>ECOSORT</h2>
+                  <h1 className="text-xl font-bold bg-gradient-to-r from-emerald-600 to-teal-600 bg-clip-text text-transparent">
+                    ECOSORT
+                  </h1>
                 </div>
               </div>
-            )}
-            <button
-              onClick={() => {
-                setSidebarOpen(false);
-                if (window.innerWidth >= 1024) {
-                  setSidebarCollapsed(!sidebarCollapsed);
-                }
-              }}
-              className={`p-2 rounded-lg ${isDark ? "hover:bg-gray-700" : "hover:bg-gray-100"} transition-colors`}
-            >
-              {sidebarCollapsed ? <FiMenu className="w-5 h-5" /> : <FiX className="w-5 h-5" />}
-            </button>
-          </div>
+            </div>
 
-          <nav className="flex-1 overflow-y-auto p-4 space-y-2" style={{ scrollbarWidth: "thin" }}>
-            {WEB_MENU_ITEMS.map((item) => {
-              const Icon = item.icon;
-              const isActive = activeTab === item.id;
-
-              return (
-                <button
-                  key={item.id}
-                  onClick={() => handleNavigation(item)}
-                  className={`w-full flex items-center ${sidebarCollapsed ? 'justify-center' : 'space-x-3'} px-4 py-3.5 rounded-xl transition-all duration-300 group relative overflow-hidden ${
-                    isActive
-                      ? `${isDark 
-                          ? "bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-lg shadow-emerald-500/25" 
-                          : "bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-lg shadow-emerald-500/25"
-                        } transform scale-[1.02]`
-                      : `${isDark 
-                          ? "text-gray-300 hover:bg-gradient-to-r hover:from-gray-700 hover:to-gray-600 hover:text-white" 
-                          : "text-gray-700 hover:bg-gradient-to-r hover:from-gray-50 hover:to-gray-100 hover:text-gray-900"
-                        } hover:transform hover:scale-[1.01] border border-transparent hover:border-gray-200 dark:hover:border-gray-600"`
-                  }`}
-                  title={sidebarCollapsed ? item.title : ''}
-                >
-                  {isActive && (
-                    <div className="absolute inset-0 bg-gradient-to-r from-white/10 to-transparent opacity-20"></div>
-                  )}
-                  <Icon className={`w-5 h-5 ${isActive ? "text-white" : ""} transition-colors flex-shrink-0`} />
-                  {!sidebarCollapsed && <span className="font-medium flex-1 text-left">{item.title}</span>}
-                </button>
-              );
-            })}
-          </nav>
-
-          <div className={`p-4 border-t ${isDark ? "border-gray-700" : "border-gray-200"} flex-shrink-0`}>
-            {!sidebarCollapsed && (
+            <div className={`p-4 border-b ${isDark ? "border-gray-700" : "border-gray-200"}`}>
               <div
-                className={`flex items-center space-x-3 p-3 rounded-lg cursor-pointer group transition-colors mb-3 ${
-                  isDark
-                    ? "hover:bg-gray-700 text-gray-300 hover:text-white"
-                    : "hover:bg-slate-50 text-slate-600 hover:text-slate-800"
-                }`}
                 onClick={() => navigate("/profile")}
+                className="flex items-center gap-3 p-3 rounded-xl bg-gradient-to-r from-emerald-500/10 to-teal-500/10 cursor-pointer hover:from-emerald-500/20 hover:to-teal-500/20 transition-all group"
               >
-                <div className="w-8 h-8 rounded-full bg-gradient-to-br from-emerald-100 to-teal-100 flex items-center justify-center group-hover:shadow-md transition-all">
-                  <FiUser className="text-emerald-600 w-4 h-4" />
+                <div className="w-10 h-10 rounded-full bg-gradient-to-br from-emerald-500 to-teal-500 flex items-center justify-center text-white font-bold group-hover:scale-110 transition-transform shrink-0">
+                  <FiUser />
                 </div>
                 <div className="flex-1 min-w-0">
-                  <p className="font-medium truncate">{userName || "User"}</p>
-                  <p className={`text-xs truncate ${isDark ? "text-gray-400" : "text-slate-500"}`}>{auth.currentUser?.email}</p>
+                  <p className={`font-semibold truncate ${isDark ? "text-gray-200" : "text-gray-800"}`}>
+                    {userName || "User"}
+                  </p>
+                  <p className={`text-xs truncate ${isDark ? "text-gray-400" : "text-gray-500"}`}>
+                    {auth.currentUser?.email}
+                  </p>
                 </div>
               </div>
-            )}
-            <button
-              onClick={handleLogout}
-              className={`w-full flex items-center ${sidebarCollapsed ? 'justify-center' : 'space-x-2 justify-center'} py-2.5 rounded-lg transition-all hover:transform hover:scale-105 ${
-                isDark 
-                  ? "text-gray-400 hover:text-red-400 hover:bg-red-500/10 border border-transparent hover:border-red-500/30" 
-                  : "text-gray-500 hover:text-red-600 hover:bg-red-50 border border-transparent hover:border-red-200"
-              }`}
-              title={sidebarCollapsed ? "Logout" : ''}
-            >
-              <FiLogOut className="w-5 h-5" />
-              {!sidebarCollapsed && <span className="font-medium">Logout</span>}
-            </button>
+            </div>
+
+            <nav className="flex-1 overflow-y-auto p-4 space-y-5 scrollbar-thin">
+              {sidebarGroups.map(({ group, items }) => (
+                <div key={group}>
+                  <p className={`text-[10px] font-black uppercase tracking-widest mb-2 px-1 ${isDark ? "text-gray-500" : "text-gray-400"}`}>
+                    {group}
+                  </p>
+                  <div className="space-y-0.5">
+                    {items.map((item) => {
+                      const Icon = item.icon;
+                      const isActive = activeTab === item.id;
+                      return (
+                        <button
+                          key={item.id}
+                          onClick={() => handleNavigation(item)}
+                          className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all duration-200 group relative ${
+                            isActive
+                              ? isDark
+                                ? "bg-gradient-to-r from-emerald-500/20 to-teal-500/20 text-emerald-400 shadow-sm"
+                                : "bg-gradient-to-r from-emerald-500 to-teal-500 text-white shadow-md shadow-emerald-500/25"
+                              : isDark
+                                ? "text-gray-400 hover:bg-gray-700/50 hover:text-gray-200"
+                                : "text-gray-600 hover:bg-gray-100 hover:text-gray-900"
+                          }`}
+                        >
+                          {isActive && (
+                            <div className={`absolute left-0 w-1 h-5 rounded-r-full ${isDark ? "bg-emerald-400" : "bg-white/60"}`} />
+                          )}
+                          <span className={`text-base transition-transform ${isActive ? "scale-110" : "group-hover:scale-110"}`}>
+                            <Icon />
+                          </span>
+                          <span className="font-medium flex-1 text-left text-sm">{item.title}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </nav>
+
+            <div className={`p-4 border-t ${isDark ? "border-gray-700" : "border-gray-200"}`}>
+              <button
+                onClick={handleLogout}
+                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 ${
+                  isDark
+                    ? "bg-red-500/10 text-red-400 hover:bg-red-500/20"
+                    : "bg-red-50 text-red-600 hover:bg-red-100"
+                }`}
+              >
+                <FiLogOut className="text-xl" />
+                <span className="font-medium">Sign Out</span>
+              </button>
+            </div>
+
           </div>
         </aside>
 
         {sidebarOpen && (
           <div
-            className="lg:hidden fixed inset-0 bg-black/60 backdrop-blur-sm"
+            className="fixed inset-0 bg-black/60 backdrop-blur-md z-40 lg:hidden transition-opacity duration-300"
             onClick={() => setSidebarOpen(false)}
-            style={{ zIndex: 45 }}
           />
         )}
 
-        <div className={`flex flex-col flex-1 min-w-0 transition-all duration-300 ${sidebarCollapsed ? 'lg:ml-20' : 'lg:ml-64'}`}>
-          
-          <header className="hidden lg:flex items-center justify-end h-20 px-6 lg:px-8">
-            <div className="flex-shrink-0 z-50">
-              <NotificationCenter userId={auth.currentUser?.uid} />
+        <div className="flex-1 flex flex-col min-w-0 lg:overflow-hidden relative">
+
+          <header className={`hidden lg:block border-b transition-colors shrink-0 ${
+            isDark ? "bg-gray-800/50 border-gray-700 text-gray-100" : "bg-white/80 border-gray-200 text-gray-800"
+          } backdrop-blur-md`}>
+            <div className="px-8 py-4 flex justify-between items-center">
+              <div>
+                <h2 className="text-xl font-extrabold tracking-tight">
+                  {activeMenuItem?.title || "Dashboard"}
+                </h2>
+              </div>
+
+              <div className="flex items-center gap-3">
+                <NotificationCenter userId={currentUserId} />
+                <div
+                  onClick={() => navigate("/profile")}
+                  className={`flex items-center gap-2.5 cursor-pointer px-3 py-2 rounded-xl border transition-colors ${
+                    isDark ? "border-gray-700 hover:bg-gray-700/50" : "border-gray-200 hover:bg-gray-50"
+                  }`}
+                >
+                  <div className="text-right hidden sm:block">
+                    <p className="text-sm font-bold leading-tight">{userName || "User"}</p>
+                  </div>
+                  <div className="w-9 h-9 rounded-full bg-gradient-to-br from-emerald-500 to-teal-500 flex items-center justify-center text-white shadow-md shrink-0">
+                    <FiUser className="text-sm" />
+                  </div>
+                </div>
+              </div>
             </div>
           </header>
-          
-          <div className="p-4 lg:px-6 lg:pb-6">
-            <div
-              className={`relative rounded-2xl shadow-xl border ${
-                isDark ? "bg-gray-800/50 border-gray-700/50" : "bg-white/80 border-slate-200/50"
-              } backdrop-blur-sm`}
-            >
 
-              <div className="p-4 lg:p-8 min-h-[90vh]">
-                {activeTab === "overview" && (
-                  <div className="space-y-6 lg:space-y-8">
-                     
-                     {/* --- NEW REDESIGNED HEADER SECTION --- */}
-                  <div className={`rounded-2xl p-6 flex flex-col md:flex-row justify-between items-center gap-6 shadow-md border-2 ${
-                    isDark 
-                      ? "bg-emerald-900/40 border-emerald-500/30" // Stronger dark green with visible border
-                      : "bg-emerald-100 border-emerald-200"       // Richer light green background
-                  }`}>
-                      {/* Left Side */}
-                      <div className="text-center md:text-left">
-                        <h1 className={`text-2xl md:text-3xl font-bold mb-2 ${isDark ? "text-white" : "text-slate-800"}`}>
-                          {getGreeting()}, <span className="text-emerald-500">{userName || "User"}</span>! 
-                        </h1>
-                  
+          <main className="flex-1 lg:overflow-y-auto p-4 lg:p-8 scroll-smooth">
+            {activeTab === "overview" && (
+              <div className="space-y-6 animate-fadeIn">
+
+                <div className={`relative overflow-hidden rounded-2xl p-6 ${
+                  isDark
+                    ? "bg-gradient-to-r from-emerald-900/60 to-teal-900/60 border border-emerald-700/40"
+                    : "bg-gradient-to-r from-emerald-500 to-teal-600"
+                }`}>
+                  <div className="absolute -top-8 -right-8 w-40 h-40 bg-white/10 rounded-full blur-2xl pointer-events-none" />
+                  <div className="absolute -bottom-8 -left-4 w-32 h-32 bg-white/5 rounded-full blur-2xl pointer-events-none" />
+                  <div className="relative z-10">
+                    <p className="text-white/80 text-sm font-medium mb-1">{getGreeting()} 👋</p>
+                    <h2 className="text-2xl font-extrabold text-white">{userName || "User"}</h2>
+                    <p className="text-white/70 text-sm mt-1">
+                      {new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" })}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
+                  {[
+                    { label: "Eco Points",        value: points || 0,                                          icon: <FaStar className="text-2xl"/>,      gradient: "from-amber-500 to-orange-500" },
+                    { label: "Leaderboard Rank",  value: `#${userRank || "—"}`,                                icon: <FaTrophy className="text-2xl"/>,    gradient: "from-emerald-500 to-teal-500" },
+                    { label: "This Month",        value: monthlySubmissions,                                   icon: <FaRecycle className="text-2xl"/>,   gradient: "from-blue-500 to-cyan-500" },
+                    { label: "This Week",         value: weeklySubmissions,                                    icon: <FaCalendarAlt className="text-2xl"/>, gradient: "from-sky-500 to-blue-500" },
+                    { label: "Day Streak",        value: submissionStreak > 0 ? `🔥 ${submissionStreak}` : 0, icon: <FaChartLine className="text-2xl"/>, gradient: "from-orange-500 to-red-500" },
+                  ].map((stat, idx) => (
+                    <div key={idx} className={`p-5 rounded-2xl transition-all group ${isDark ? "bg-gray-800/40 border border-gray-700 hover:border-gray-600" : "bg-white border border-gray-100 shadow-sm hover:shadow-md"}`}>
+                      <div className={`w-11 h-11 rounded-xl flex items-center justify-center mb-3 bg-gradient-to-br ${stat.gradient} text-white shadow-md group-hover:scale-110 transition-transform`}>
+                        {stat.icon}
                       </div>
-
-                      {/* Right Side */}
-                      <div className="flex items-center gap-6">
-                        {/* Points Stat */}
-                        <div className="flex flex-col items-center">
-                          <div className="w-12 h-12 bg-amber-400 rounded-xl flex items-center justify-center text-white text-xl shadow-sm mb-2 transition-transform hover:scale-110">
-                            <FaStar />
-                          </div>
-                          <span className={`text-xl font-bold ${isDark ? "text-white" : "text-slate-800"} leading-none`}>
-                            {points || 0}
-                          </span>
-                          <span className={`text-xs font-medium ${isDark ? "text-gray-400" : "text-slate-400"} mt-1`}>
-                            Points
-                          </span>
-                        </div>
-
-                        {/* Rank Stat */}
-                        <div className="flex flex-col items-center">
-                          <div className="w-12 h-12 bg-emerald-500 rounded-xl flex items-center justify-center text-white text-xl shadow-sm mb-2 transition-transform hover:scale-110">
-                            <FaTrophy />
-                          </div>
-                          <span className={`text-xl font-bold ${isDark ? "text-white" : "text-slate-800"} leading-none`}>
-                            #{userRank || "-"}
-                          </span>
-                          <span className={`text-xs font-medium ${isDark ? "text-gray-400" : "text-slate-400"} mt-1`}>
-                            Rank
-                          </span>
-                        </div>
-                      </div>
+                      <div className="text-2xl font-black mb-0.5">{typeof stat.value === 'number' ? stat.value.toLocaleString() : stat.value}</div>
+                      <div className={`text-xs font-semibold uppercase tracking-wider ${isDark ? "text-gray-400" : "text-gray-500"}`}>{stat.label}</div>
                     </div>
-                    {/* --- END REDESIGNED HEADER SECTION --- */}
+                  ))}
+                </div>
+
+                <div className={`rounded-2xl border ${isDark ? "bg-gray-800/40 border-gray-700" : "bg-white border-gray-100 shadow-sm"}`}>
+                  <div className={`px-5 py-4 border-b ${isDark ? "border-gray-700" : "border-gray-100"}`}>
+                    <div className="flex items-center gap-2">
+                      <FaChartBar className={isDark ? "text-emerald-400" : "text-emerald-600"} />
+                      <h3 className="font-bold text-sm">Quick Actions</h3>
+                    </div>
+                  </div>
+                  <div className="p-3 space-y-1.5">
+                    {[
+                      { label: "Submit Waste",    id: "submit",       icon: <FaRecycle />,      color: "from-emerald-500 to-teal-500" },
+                      { label: "Browse Rewards",  id: "rewards",      icon: <FaGift />,         color: "from-amber-500 to-orange-500" },
+                      { label: "Forum",           id: "report",       icon: <FaExclamationTriangle />, color: "from-red-500 to-rose-500" },
+                      { label: "Leaderboard",     id: "leaderboard",  icon: <FaTrophy />,       color: "from-purple-500 to-pink-500" },
+                      { label: "Transactions",    id: "transactions", icon: <FaFileAlt />,      color: "from-slate-500 to-gray-500" },
+                    ].map(({ label, id, icon, color }) => (
+                      <button
+                        key={id}
+                        onClick={() => handleNavigation(WEB_MENU_ITEMS.find(m => m.id === id))}
+                        className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all group ${
+                          isDark ? "hover:bg-gray-700/60 text-gray-300" : "hover:bg-gray-50 text-gray-700"
+                        }`}
+                      >
+                        <div className={`w-8 h-8 rounded-lg bg-gradient-to-br ${color} text-white flex items-center justify-center text-sm shadow-sm group-hover:scale-110 transition-transform`}>
+                          {icon}
+                        </div>
+                        <span className="text-sm font-semibold">{label}</span>
+                        <span className={`ml-auto text-xs ${isDark ? "text-gray-600" : "text-gray-300"}`}>→</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
 
                     <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
 
-                      <div className="xl:col-span-3 space-y-6">
-                        <div className={`rounded-2xl overflow-hidden shadow-xl border ${isDark ? "bg-gradient-to-br from-purple-900/40 to-pink-900/40 border-purple-700/50" : "bg-gradient-to-br from-purple-50 to-pink-50 border-purple-200"} h-full`}>
-                          <div className="p-6 lg:p-8">
-                            <h3 className={`text-xl lg:text-2xl font-bold mb-6 ${isDark ? "text-purple-200" : "text-purple-800"}`}>
-                              Calendar
-                            </h3>
-                            <DashboardCalendar
+                      <div className="xl:col-span-2">
+                        <div className={`rounded-2xl border h-full ${isDark ? "bg-gray-800/40 border-gray-700" : "bg-white border-gray-100 shadow-sm"}`}>
+                          <div className={`px-5 py-4 border-b ${isDark ? "border-gray-700" : "border-gray-100"}`}>
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-2">
+                                <FaCalendarAlt className={isDark ? "text-emerald-400" : "text-emerald-600"} />
+                                <h3 className="font-bold text-sm">Collection Calendar</h3>
+                              </div>
+                              <div className="flex items-center gap-3">
+                                <div className="flex items-center gap-1.5">
+                                  <div className="w-2.5 h-2.5 rounded-full bg-blue-500 flex-shrink-0" />
+                                  <span className={`text-[11px] font-medium ${isDark ? 'text-blue-400' : 'text-blue-600'}`}>Collection</span>
+                                </div>
+                                <div className="flex items-center gap-1.5">
+                                  <div className="w-2.5 h-2.5 rounded-full bg-green-500 flex-shrink-0" />
+                                  <span className={`text-[11px] font-medium ${isDark ? 'text-green-400' : 'text-green-600'}`}>Submission</span>
+                                </div>
+                              </div>
+                            </div>
+                            <p className={`text-xs mt-1.5 ${isDark ? "text-gray-400" : "text-gray-500"}`}>
+                              View upcoming waste collection and submission schedules in your area.
+                            </p>
+                          </div>
+                          <div className="p-5">
+                            <InlineCalendar
                               selectedDate={selectedDate}
                               setSelectedDate={setSelectedDate}
                               isDark={isDark}
@@ -1357,93 +1432,36 @@ export default function Dashboard() {
                         </div>
                       </div>
 
-                      <div className="xl:col-span-2 space-y-6">
-                        <div className={`rounded-2xl overflow-hidden shadow-xl border ${isDark ? "bg-gradient-to-br from-blue-900/40 to-indigo-900/40 border-blue-700/50" : "bg-gradient-to-br from-blue-50 to-indigo-50 border-blue-200"}`}>
-                          <div className="p-6 lg:p-8">
-                            <div className="flex items-center gap-3 mb-6">
-                              <div>
-                                <h3 className={`text-xl lg:text-2xl font-bold ${isDark ? "text-blue-200" : "text-blue-800"}`}>
-                                  Garbage Collection
-                                </h3>
-                                <p className={`text-sm ${isDark ? "text-blue-400" : "text-blue-600"}`}>
-                                  Don't miss your garbage collection day
-                                </p>
-                              </div>
-                            </div>
+                      <div className="space-y-6">
 
+                        <div className={`rounded-2xl border ${isDark ? "bg-gray-800/40 border-gray-700" : "bg-white border-gray-100 shadow-sm"}`}>
+                          <div className={`px-5 py-4 border-b ${isDark ? "border-gray-700" : "border-gray-100"}`}>
+                            <div className="flex items-center gap-2">
+                              <FaMapMarkerAlt className={isDark ? "text-blue-400" : "text-blue-600"} />
+                              <h3 className="font-bold text-sm">Next Collection</h3>
+                            </div>
+                          </div>
+                          <div className="p-4">
                             {loadingSchedules ? (
-                              <div className="flex flex-col items-center justify-center py-12">
-                                <div className="animate-spin rounded-full h-12 w-12 border-4 border-blue-500 border-t-transparent mb-4"></div>
-                                <span className={`text-sm ${isDark ? "text-blue-300" : "text-blue-700"}`}>
-                                  Loading schedule...
-                                </span>
+                              <div className="flex justify-center py-4">
+                                <div className="animate-spin rounded-full h-8 w-8 border-2 border-emerald-500 border-t-transparent" />
                               </div>
                             ) : !nextCollection ? (
-                              <div className="text-center py-12">
-                                <div className={`w-20 h-20 mx-auto mb-4 rounded-full ${isDark ? "bg-blue-500/10" : "bg-blue-100"} flex items-center justify-center`}>
-                                  <FaCalendarAlt className={`w-10 h-10 ${isDark ? "text-blue-400" : "text-blue-600"}`} />
-                                </div>
-                                <h4 className={`text-lg font-bold mb-2 ${isDark ? "text-blue-300" : "text-blue-700"}`}>
-                                  No Schedule Available
-                                </h4>
-                                <p className={`text-sm ${isDark ? "text-blue-400" : "text-blue-600"}`}>
-                                  Contact your administrator to set up collection schedules
-                                </p>
-                              </div>
+                              <p className={`text-xs text-center py-4 ${isDark ? "text-gray-500" : "text-gray-400"}`}>No collection schedule available.</p>
                             ) : (
-                              <div className="space-y-6">
-                                <div className={`p-6 rounded-xl ${isDark ? "bg-gray-800/50" : "bg-white/80"} backdrop-blur-sm border ${isDark ? "border-gray-700" : "border-blue-200"}`}>
-                                  <div className="flex items-start justify-between mb-4">
-                                    <div className="flex-1">
-                                      <div className={`text-4xl lg:text-5xl font-black mb-3 ${isDark ? "text-white" : "text-blue-900"}`}>
-                                        {nextCollection.date.toLocaleDateString('en-US', { weekday: 'long' })}
-                                      </div>
-                                      <div className={`text-2xl font-bold mb-4 ${isDark ? "text-gray-300" : "text-slate-700"}`}>
-                                        {nextCollection.date.toLocaleDateString('en-US', {
-                                          month: 'long',
-                                          day: 'numeric',
-                                          year: 'numeric'
-                                        })}
-                                      </div>
-                                    </div>
-                                    {isToday(nextCollection.date) && (
-                                      <div className="animate-pulse">
-                                        <span className="inline-flex items-center px-4 py-2 bg-gradient-to-r from-emerald-500 to-teal-500 text-white text-sm font-bold rounded-full shadow-lg">
-                                          <span className="w-2 h-2 bg-white rounded-full mr-2 animate-ping"></span>
-                                          TODAY
-                                        </span>
-                                      </div>
-                                    )}
-                                  </div>
-
-                                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                    <div className={`flex items-center gap-3 p-4 rounded-xl ${isDark ? "bg-gray-700/50" : "bg-blue-50"}`}>
-                                      
-                                      <div>
-                                        <div className={`text-xs font-medium ${isDark ? "text-gray-400" : "text-slate-600"}`}>
-                                          Collection Time
-                                        </div>
-                                        <div className={`text-lg font-bold ${isDark ? "text-white" : "text-slate-900"}`}>
-                                          {formatTimeRange(nextCollection.schedule.startTime, nextCollection.schedule.endTime)}
-                                        </div>
-                                      </div>
-                                    </div>
-
-                                    {(nextCollection.schedule.area || nextCollection.schedule.barangay) && (
-                                      <div className={`flex items-center gap-3 p-4 rounded-xl ${isDark ? "bg-gray-700/50" : "bg-blue-50"}`}>
-                                        
-                                        <div className="flex-1 min-w-0">
-                                          <div className={`text-xs font-medium ${isDark ? "text-gray-400" : "text-slate-600"}`}>
-                                            Location
-                                          </div>
-                                          <div className={`text-sm font-bold truncate ${isDark ? "text-white" : "text-slate-900"}`}>
-                                            {nextCollection.schedule.area}
-                                            {nextCollection.schedule.barangay && `, ${nextCollection.schedule.barangay}`}
-                                          </div>
-                                        </div>
-                                      </div>
-                                    )}
-                                  </div>
+                              <div>
+                                <div className={`text-2xl font-black mb-1 ${isDark ? "text-white" : "text-gray-900"}`}>
+                                  {nextCollection.date.toLocaleDateString('en-US', { weekday: 'long' })}
+                                </div>
+                                <div className={`text-sm font-semibold mb-3 ${isDark ? "text-gray-300" : "text-gray-600"}`}>
+                                  {nextCollection.date.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}
+                                  {isToday(nextCollection.date) && (
+                                    <span className="ml-2 inline-flex items-center px-2 py-0.5 bg-emerald-500 text-white text-[10px] font-black rounded-full">TODAY</span>
+                                  )}
+                                </div>
+                                <div className={`text-xs rounded-xl px-3 py-2 ${isDark ? "bg-gray-700 text-gray-300" : "bg-gray-50 text-gray-600"}`}>
+                                  ⏰ {formatTimeRange(nextCollection.schedule.startTime, nextCollection.schedule.endTime)}
+                                  {nextCollection.schedule.area && <span className="ml-2">📍 {nextCollection.schedule.area}</span>}
                                 </div>
                               </div>
                             )}
@@ -1451,153 +1469,90 @@ export default function Dashboard() {
                         </div>
 
                         {nextSubmission && (
-                          <div className={`rounded-2xl overflow-hidden shadow-xl border ${isDark ? "bg-gradient-to-br from-green-900/40 to-emerald-900/40 border-green-700/50" : "bg-gradient-to-br from-green-50 to-emerald-50 border-green-200"}`}>
-                            <div className="p-6 lg:p-8">
-                              <div className="flex items-center gap-3 mb-6">
-                                
-                                <div>
-                                  <h3 className={`text-xl lg:text-2xl font-bold ${isDark ? "text-green-200" : "text-green-800"}`}>
-                                    Recyclable Waste Submission
-                                  </h3>
-                                  <p className={`text-sm ${isDark ? "text-green-400" : "text-green-600"}`}>
-                                    Drop off your recyclable and sorted waste
-                                  </p>
-                                </div>
+                          <div className={`rounded-2xl border ${isDark ? "bg-gray-800/40 border-gray-700" : "bg-white border-gray-100 shadow-sm"}`}>
+                            <div className={`px-5 py-4 border-b ${isDark ? "border-gray-700" : "border-gray-100"}`}>
+                              <div className="flex items-center gap-2">
+                                <FaRecycle className={isDark ? "text-emerald-400" : "text-emerald-600"} />
+                                <h3 className="font-bold text-sm">Next Submission Drop-off</h3>
                               </div>
-
-                              <div className="space-y-6">
-                                <div className={`p-6 rounded-xl ${isDark ? "bg-gray-800/50" : "bg-white/80"} backdrop-blur-sm border ${isDark ? "border-gray-700" : "border-green-200"}`}>
-                                  <div className="flex items-start justify-between mb-4">
-                                    <div className="flex-1">
-                                      <div className={`text-4xl lg:text-5xl font-black mb-3 ${isDark ? "text-white" : "text-green-900"}`}>
-                                        {nextSubmission.date.toLocaleDateString('en-US', { weekday: 'long' })}
-                                      </div>
-                                      <div className={`text-2xl font-bold mb-4 ${isDark ? "text-gray-300" : "text-slate-700"}`}>
-                                        {nextSubmission.date.toLocaleDateString('en-US', {
-                                          month: 'long',
-                                          day: 'numeric',
-                                          year: 'numeric'
-                                        })}
-                                      </div>
-                                    </div>
-                                    {isToday(nextSubmission.date) && (
-                                      <div className="animate-pulse">
-                                        <span className="inline-flex items-center px-4 py-2 bg-gradient-to-r from-green-500 to-emerald-500 text-white text-sm font-bold rounded-full shadow-lg">
-                                          <span className="w-2 h-2 bg-white rounded-full mr-2 animate-ping"></span>
-                                          TODAY
-                                        </span>
-                                      </div>
-                                    )}
-                                  </div>
-
-                                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                    <div className={`flex items-center gap-3 p-4 rounded-xl ${isDark ? "bg-gray-700/50" : "bg-green-50"}`}>
-                                      
-                                      <div>
-                                        <div className={`text-xs font-medium ${isDark ? "text-gray-400" : "text-slate-600"}`}>
-                                          Operating Hours
-                                        </div>
-                                        <div className={`text-lg font-bold ${isDark ? "text-white" : "text-slate-900"}`}>
-                                          {formatTimeRange(nextSubmission.schedule.startTime, nextSubmission.schedule.endTime)}
-                                        </div>
-                                      </div>
-                                    </div>
-
-                                    {(nextSubmission.schedule.area || nextSubmission.schedule.barangay) && (
-                                      <div className={`flex items-center gap-3 p-4 rounded-xl ${isDark ? "bg-gray-700/50" : "bg-green-50"}`}>
-                                        
-                                        <div className="flex-1 min-w-0">
-                                          <div className={`text-xs font-medium ${isDark ? "text-gray-400" : "text-slate-600"}`}>
-                                            Location
-                                          </div>
-                                          <div className={`text-sm font-bold truncate ${isDark ? "text-white" : "text-slate-900"}`}>
-                                            {nextSubmission.schedule.area}
-                                            {nextSubmission.schedule.barangay && `, ${nextSubmission.schedule.barangay}`}
-                                          </div>
-                                        </div>
-                                      </div>
-                                    )}
-                                  </div>
-                                </div>
+                            </div>
+                            <div className="p-4">
+                              <div className={`text-2xl font-black mb-1 ${isDark ? "text-white" : "text-gray-900"}`}>
+                                {nextSubmission.date.toLocaleDateString('en-US', { weekday: 'long' })}
+                              </div>
+                              <div className={`text-sm font-semibold mb-3 ${isDark ? "text-gray-300" : "text-gray-600"}`}>
+                                {nextSubmission.date.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}
+                                {isToday(nextSubmission.date) && (
+                                  <span className="ml-2 inline-flex items-center px-2 py-0.5 bg-emerald-500 text-white text-[10px] font-black rounded-full">TODAY</span>
+                                )}
+                              </div>
+                              <div className={`text-xs rounded-xl px-3 py-2 ${isDark ? "bg-gray-700 text-gray-300" : "bg-gray-50 text-gray-600"}`}>
+                                ⏰ {formatTimeRange(nextSubmission.schedule.startTime, nextSubmission.schedule.endTime)}
+                                {nextSubmission.schedule.area && <span className="ml-2">📍 {nextSubmission.schedule.area}</span>}
                               </div>
                             </div>
                           </div>
                         )}
-                      </div>
-                      
-                      <div className="space-y-6">
-                        {/* Web: Added Blockchain Status Card *
-                        <div 
-                          onClick={() => setActiveTab('ledger')}
-                          className={`rounded-2xl overflow-hidden shadow-xl border cursor-pointer hover:shadow-2xl transition-all group ${isDark ? "bg-gradient-to-br from-indigo-900/50 to-indigo-800/30 border-indigo-700" : "bg-gradient-to-br from-indigo-50 to-white border-indigo-100"}`}
-                        >
-                           <div className="p-6">
-                              <div className="flex items-center justify-between mb-2">
-                                 <div className={`p-3 rounded-xl ${isDark ? 'bg-indigo-500/20 text-indigo-300' : 'bg-indigo-100 text-indigo-600'}`}>
-                                    <FaCubes className="w-6 h-6" />
-                                 </div>
-                                 
-                              </div>
-                              <h3 className={`text-lg font-bold mb-1 ${isDark ? "text-white" : "text-gray-900"}`}>
-                                 System Integrity
-                              </h3>
-                              <p className={`text-sm mb-4 ${isDark ? "text-gray-400" : "text-gray-500"}`}>
-                                 Verify all transactions on ledger.
-                              </p>
-                              <div className={`flex items-center text-sm font-medium ${isDark ? 'text-indigo-400 group-hover:text-indigo-300' : 'text-indigo-600 group-hover:text-indigo-700'}`}>
-                                 View Public Ledger <FaLink className="ml-2 w-3 h-3" />
-                              </div>
-                           </div>
-                        </div>*/}
 
-                        {recentActivity.length > 0 && (
-                          <div className={`rounded-2xl overflow-hidden shadow-xl border ${isDark ? "bg-gray-800/80 border-gray-700" : "bg-white border-gray-200"}`}>
-                            <div className="p-6 lg:p-8">
-                              <h3 className={`text-xl lg:text-2xl font-bold mb-6 ${isDark ? "text-white" : "text-gray-900"}`}>
-                                Recent Activity
-                              </h3>
-                              <div className={`divide-y ${isDark ? 'divide-gray-700' : 'divide-gray-100'}`}>
-                                {recentActivity.map((activity) => (
-                                  <div key={activity.id} className="py-4 flex items-center gap-4">
-                                    <div className={`w-10 h-10 rounded-xl bg-${activity.color}-500/20 flex items-center justify-center flex-shrink-0`}>
-                                      <activity.icon className={`text-${activity.color}-500 text-lg`} />
-                                    </div>
-                                    <div className="flex-1 min-w-0">
-                                      <p className={`text-sm font-medium ${isDark ? 'text-white' : 'text-gray-900'} truncate`}>
-                                        {activity.description}
-                                      </p>
-                                      <p className={`text-xs ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
-                                        {formatRelativeTime(activity.timestamp)}
-                                      </p>
-                                    </div>
-                                    <span className={`text-sm font-bold ${activity.points > 0 ? 'text-emerald-500' : 'text-red-500'}`}>
-                                      {activity.points > 0 ? '+' : ''}{activity.points}
-                                    </span>
-                                  </div>
-                                ))}
-                              </div>
+                        <div className={`rounded-2xl border ${isDark ? "bg-gray-800/40 border-gray-700" : "bg-white border-gray-100 shadow-sm"}`}>
+                          <div className={`flex justify-between items-center px-5 py-4 border-b ${isDark ? "border-gray-700" : "border-gray-100"}`}>
+                            <div className="flex items-center gap-2">
+                              <FaChartLine className={isDark ? "text-emerald-400" : "text-emerald-600"} />
+                              <h3 className="font-bold text-sm">Recent Activity</h3>
                             </div>
+                            <button
+                              onClick={() => handleNavigation(WEB_MENU_ITEMS.find(m => m.id === "transactions"))}
+                              className={`text-xs font-semibold px-3 py-1.5 rounded-lg transition-colors ${isDark ? "text-emerald-400 hover:bg-emerald-400/10" : "text-emerald-600 hover:bg-emerald-50"}`}
+                            >
+                              View All →
+                            </button>
                           </div>
-                        )}
-                      </div>
+                          {loadingActivity ? (
+                            <div className="flex justify-center py-8">
+                              <div className="animate-spin rounded-full h-8 w-8 border-2 border-emerald-500 border-t-transparent" />
+                            </div>
+                          ) : recentActivity.length > 0 ? (
+                            <div className={`divide-y ${isDark ? "divide-gray-700/50" : "divide-gray-100"}`}>
+                              {recentActivity.slice(0, 4).map((activity) => (
+                                <div key={activity.id} className={`flex items-center gap-3 px-5 py-3 transition-colors ${isDark ? "hover:bg-gray-700/30" : "hover:bg-gray-50"}`}>
+                                  <div className={`w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-black shrink-0 bg-gradient-to-br ${activity.points > 0 ? "from-emerald-400 to-teal-500" : "from-rose-400 to-pink-500"}`}>
+                                    {activity.points > 0 ? "+" : "−"}
+                                  </div>
+                                  <div className="flex-1 min-w-0">
+                                    <p className={`text-sm font-semibold truncate ${isDark ? "text-gray-200" : "text-gray-800"}`}>{activity.description}</p>
+                                    <p className={`text-xs ${isDark ? "text-gray-500" : "text-gray-400"}`}>{formatRelativeTime(activity.timestamp)}</p>
+                                  </div>
+                                  <span className={`text-sm font-extrabold ${activity.points > 0 ? "text-emerald-600" : "text-rose-600"}`}>
+                                    {activity.points > 0 ? "+" : ""}{activity.points} pts
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <div className="px-5 py-8 text-center">
+                              <FaRecycle className={`text-3xl mx-auto mb-2 ${isDark ? "text-gray-600" : "text-gray-300"}`} />
+                              <p className={`text-sm font-medium ${isDark ? "text-gray-400" : "text-gray-500"}`}>No activity yet</p>
+                              <p className={`text-xs mt-1 ${isDark ? "text-gray-600" : "text-gray-400"}`}>Submit waste to start earning points!</p>
+                            </div>
+                          )}
+                        </div>
 
+                      </div>
                     </div>
+
                   </div>
                 )}
-                
+
+                {/* TAB CONTENT RENDERING */}
                 {activeTab === "submit" && <SubmitWaste />}
                 {activeTab === "rewards" && <Rewards />}
                 {activeTab === "report" && <Forum sidebarOpen={sidebarOpen} />}
                 {activeTab === "leaderboard" && <Leaderboard />}
                 {activeTab === "transactions" && <Transactions />}
-                {/*{activeTab === "ledger" && <PublicVerification />}*/}
-              </div>
+              </main>
             </div>
           </div>
-        </div>
-      </div>
 
-      {/* User Profile Modal */}
       {showModal && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fadeIn"
@@ -1609,7 +1564,6 @@ export default function Dashboard() {
             }`}
             onClick={(e) => e.stopPropagation()}
           >
-            {/* Close Button */}
             <button
               onClick={closeModal}
               className={`absolute top-4 right-4 z-10 p-2 rounded-full transition-all duration-300 hover:scale-110 ${
@@ -1628,10 +1582,8 @@ export default function Dashboard() {
               </div>
             ) : selectedUser ? (
               <>
-                {/* Header Section */}
                 <div className={`p-8 border-b ${isDark ? "border-gray-700" : "border-gray-200"}`}>
                   <div className="flex flex-col sm:flex-row items-center gap-6">
-                    {/* Profile Picture */}
                     <div className="relative">
                       {selectedUser.profileUrl ? (
                         <img
@@ -1644,7 +1596,6 @@ export default function Dashboard() {
                           <FiUser size={36} className="text-gray-600" />
                         </div>
                       )}
-                      {/* Rank Badge */}
                       <div className={`absolute -bottom-2 left-1/2 transform -translate-x-1/2 px-3 py-1 rounded-full text-xs font-bold shadow-lg ${
                         selectedUser.rank === 1
                           ? "bg-gradient-to-r from-yellow-400 to-yellow-500 text-yellow-900"
@@ -1660,7 +1611,6 @@ export default function Dashboard() {
                       </div>
                     </div>
 
-                    {/* User Info */}
                     <div className="flex-1 text-center sm:text-left">
                       <h2 className={`text-2xl font-bold mb-2 ${isDark ? "text-gray-100" : "text-gray-900"}`}>
                         {selectedUser.username || selectedUser.email || 'Anonymous'}
@@ -1686,7 +1636,6 @@ export default function Dashboard() {
                   </div>
                 </div>
 
-                {/* Achievements Section */}
                 <div className="p-8">
                   <div className="flex items-center justify-between mb-6">
                     <h3 className={`text-xl font-bold flex items-center ${isDark ? "text-gray-200" : "text-gray-800"}`}>
@@ -1713,7 +1662,6 @@ export default function Dashboard() {
                               }`
                         }`}
                       >
-                        {/* Unlocked indicator */}
                         {achievement.unlocked && (
                           <div className="absolute top-2 right-2 bg-green-500 rounded-full p-1">
                             <FaCheckCircle className="w-3 h-3 text-white" />
@@ -1748,7 +1696,6 @@ export default function Dashboard() {
                               {achievement.description}
                             </p>
 
-                            {/* Progress for locked achievements */}
                             {!achievement.unlocked && (
                               <div className="mt-2">
                                 <div className={`w-full rounded-full h-1 ${isDark ? "bg-gray-600" : "bg-gray-200"}`}>
@@ -1770,7 +1717,6 @@ export default function Dashboard() {
                     ))}
                   </div>
 
-                  {/* Motivational Message */}
                   <div className={`mt-6 p-4 rounded-xl ${isDark ? "bg-blue-900/20 border border-blue-700/30" : "bg-blue-50 border border-blue-200"}`}>
                     <p className={`text-center text-sm ${isDark ? "text-blue-300" : "text-blue-800"}`}>
                       {selectedUser.achievements?.filter(a => a.unlocked).length === selectedUser.achievements?.length
@@ -1819,16 +1765,16 @@ export default function Dashboard() {
           }
         }
 
-        @keyframes slideUp {
-          from { 
-            opacity: 0; 
-            transform: translateY(20px); 
-          }
-          to { 
-            opacity: 1; 
-            transform: translateY(0); 
-          }
+        @keyframes slideDown {
+          from { opacity: 0; transform: translateY(-20px); }
+          to { opacity: 1; transform: translateY(0); }
         }
+        .animate-fadeIn { animation: fadeIn 0.4s ease-out forwards; }
+        .animate-slideDown { animation: slideDown 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards; }
+
+        .scrollbar-thin::-webkit-scrollbar { width: 4px; }
+        .scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
+        .scrollbar-thin::-webkit-scrollbar-thumb { background: #10b981; border-radius: 20px; }
 
         .animate-slide-down { 
           animation: slide-down 0.6s ease-out; 

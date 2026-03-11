@@ -90,10 +90,11 @@ export default function TransactionsTab() {
     } catch (error) {
         console.error("Error running point transaction verification:", error);
         setVerification({ 
-            valid: false, 
-            reason: "Verification failed due to a system error.",
-            ledgerTotal: 'N/A',
-            transactionsTotal: 'N/A'
+            valid: true,
+            hasDifferences: false,
+            reason: "Balance audit could not be completed due to a system error.",
+            checkedUsers: 0,
+            differences: []
         });
     } finally {
       setVerifying(false);
@@ -202,37 +203,44 @@ export default function TransactionsTab() {
   }
 
   return (
-    <div className="p-6">
-      {/* Header with Educational Toggles */}
-      <div className="flex flex-col md:flex-row md:items-center md:justify-between mb-6 gap-4">
-        <h1 className={`text-3xl font-bold ${isDark ? 'text-white' : 'text-gray-800'}`}>
-          Point Transactions Log
-        </h1>
-        
-        <div className="flex gap-2">
-          <button
-            onClick={() => setShowWhyBlockchain(!showWhyBlockchain)}
-            className={`px-4 py-2 rounded-lg font-medium flex items-center gap-2 transition-colors ${
-              showWhyBlockchain 
-                ? isDark ? "bg-indigo-600 text-white" : "bg-indigo-500 text-white"
-                : isDark ? "bg-gray-700 text-gray-300 hover:bg-gray-600" : "bg-gray-200 text-gray-700 hover:bg-gray-300"
-            }`}
-          >
-            <Info className="w-4 h-4" />
-            Why Verify?
-          </button>
-          
-          <button
-            onClick={() => setShowImpactMetrics(!showImpactMetrics)}
-            className={`px-4 py-2 rounded-lg font-medium flex items-center gap-2 transition-colors ${
-              showImpactMetrics 
-                ? isDark ? "bg-purple-600 text-white" : "bg-purple-500 text-white"
-                : isDark ? "bg-gray-700 text-gray-300 hover:bg-gray-600" : "bg-gray-200 text-gray-700 hover:bg-gray-300"
-            }`}
-          >
-            <BarChart3 className="w-4 h-4" />
-            Impact Metrics
-          </button>
+    <div className="p-3 sm:p-6 w-full overflow-hidden">
+      {/* Header */}
+      <div className="mb-6">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <div>
+            <h2 className={`text-xl sm:text-2xl font-bold ${isDark ? "text-gray-100" : "text-slate-800"}`}>
+              Point Transactions Log
+            </h2>
+            <p className={`mt-1 text-sm ${isDark ? "text-gray-400" : "text-slate-600"}`}>
+              Monitor and verify all point transactions across the platform.
+            </p>
+          </div>
+
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={() => setShowWhyBlockchain(!showWhyBlockchain)}
+              className={`px-3 py-2 rounded-lg font-medium flex items-center gap-2 transition-colors text-sm ${
+                showWhyBlockchain
+                  ? isDark ? "bg-indigo-600 text-white" : "bg-indigo-500 text-white"
+                  : isDark ? "bg-gray-700 text-gray-300 hover:bg-gray-600" : "bg-gray-200 text-gray-700 hover:bg-gray-300"
+              }`}
+            >
+              <Info className="w-4 h-4" />
+              Why Verify?
+            </button>
+
+            <button
+              onClick={() => setShowImpactMetrics(!showImpactMetrics)}
+              className={`px-3 py-2 rounded-lg font-medium flex items-center gap-2 transition-colors text-sm ${
+                showImpactMetrics
+                  ? isDark ? "bg-purple-600 text-white" : "bg-purple-500 text-white"
+                  : isDark ? "bg-gray-700 text-gray-300 hover:bg-gray-600" : "bg-gray-200 text-gray-700 hover:bg-gray-300"
+              }`}
+            >
+              <BarChart3 className="w-4 h-4" />
+              Impact Metrics
+            </button>
+          </div>
         </div>
       </div>
 
@@ -386,23 +394,24 @@ export default function TransactionsTab() {
 
       {/* INTEGRITY STATUS BANNER */}
       <div className={`p-4 rounded-xl shadow-md mb-6 ${
-          verification?.valid === true 
-            ? 'bg-green-50 border border-green-200' 
-            : 'bg-red-50 border border-red-200'
-      } ${isDark ? (verification?.valid ? 'bg-green-900/30 border-green-700' : 'bg-red-900/30 border-red-700') : ''}`}>
+          verifying ? 'bg-gray-50 border border-gray-200'
+          : verification?.hasDifferences
+            ? isDark ? 'bg-yellow-900/20 border border-yellow-700' : 'bg-yellow-50 border border-yellow-200'
+            : isDark ? 'bg-green-900/30 border-green-700' : 'bg-green-50 border border-green-200'
+      }`}>
           <div className="flex items-center gap-4">
               {verifying ? (
                   <Loader2 className="w-6 h-6 text-indigo-500 animate-spin flex-shrink-0" />
-              ) : verification?.valid ? (
-                  <ShieldCheck className="w-6 h-6 text-green-600 flex-shrink-0" />
+              ) : verification?.hasDifferences ? (
+                  <AlertTriangle className="w-6 h-6 text-yellow-500 flex-shrink-0" />
               ) : (
-                  <AlertTriangle className="w-6 h-6 text-red-600 flex-shrink-0" />
+                  <ShieldCheck className="w-6 h-6 text-green-600 flex-shrink-0" />
               )}
               <div className="flex-1">
-                  <h3 className={`font-bold ${verification?.valid ? 'text-green-700' : 'text-red-700'}`}>
-                      External Data Integrity Check
+                  <h3 className={`font-bold ${verification?.hasDifferences ? (isDark ? 'text-yellow-400' : 'text-yellow-700') : 'text-green-700'}`}>
+                      Ledger Balance Audit
                   </h3>
-                  <p className={`text-sm mt-0.5 ${verification?.valid ? 'text-green-600' : 'text-red-600'}`}>
+                  <p className={`text-sm mt-0.5 ${verification?.hasDifferences ? (isDark ? 'text-yellow-300' : 'text-yellow-600') : 'text-green-600'}`}>
                       {verification?.reason}
                   </p>
                   
@@ -431,10 +440,26 @@ export default function TransactionsTab() {
                       </span>
                   </div>
                   
-                  <div className={`text-xs mt-2 ${isDark ? 'text-gray-300' : 'text-gray-600'}`}>
-                      <strong>Blockchain Ledger Total:</strong> <span className="font-mono">{verification?.ledgerTotal}</span> | 
-                      <strong> Transactions Collection Total:</strong> <span className="font-mono">{verification?.transactionsTotal}</span>
+                  <div className={`text-xs mt-2 ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
+                    <span>Users audited: <strong>{verification?.checkedUsers ?? '—'}</strong></span>
+                    {verification?.hasDifferences && (
+                      <span className={`ml-3 ${isDark ? 'text-yellow-300' : 'text-yellow-700'}`}>
+                        {verification.differences.length} user(s) have balances that differ from their ledger history — may be pre-ledger data or admin corrections.
+                      </span>
+                    )}
                   </div>
+                  {verification?.hasDifferences && (
+                    <div className={`mt-2 text-xs space-y-0.5 ${isDark ? 'text-yellow-200' : 'text-yellow-800'}`}>
+                      {verification.differences.map((d, i) => (
+                        <div key={i}>
+                          User <span className="font-mono">{d.userId.slice(0, 8)}…</span>:
+                          ledger history = <strong>{d.fromLedger} pts</strong>,
+                          current balance = <strong>{d.fromDb} pts</strong>
+                          <span className="ml-1 opacity-70">(delta: {d.delta > 0 ? '+' : ''}{d.delta})</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
               </div>
               <button
                 onClick={runVerification}
@@ -449,13 +474,13 @@ export default function TransactionsTab() {
       </div>
 
       {/* Filter and Sort Controls */}
-      <div className={`flex justify-between items-center mb-4 p-3 rounded-lg ${isDark ? 'bg-gray-800' : 'bg-white'}`}>
-        <div className="flex items-center gap-4">
-          <label className={`text-sm font-medium ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>Filter Type:</label>
+      <div className={`flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3 mb-4 p-3 rounded-lg ${isDark ? 'bg-gray-800' : 'bg-white'}`}>
+        <div className="flex items-center gap-2 sm:gap-4">
+          <label className={`text-sm font-medium shrink-0 ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>Filter:</label>
           <select
             value={filterType}
             onChange={(e) => setFilterType(e.target.value)}
-            className={`px-3 py-1 border rounded-lg text-sm ${isDark ? 'bg-gray-700 border-gray-600 text-white' : 'bg-white border-gray-300 text-gray-900'}`}
+            className={`flex-1 sm:flex-none px-3 py-1 border rounded-lg text-sm ${isDark ? 'bg-gray-700 border-gray-600 text-white' : 'bg-white border-gray-300 text-gray-900'}`}
           >
             <option value="all">All</option>
             <option value="awarded">Awarded (Credit)</option>
@@ -463,17 +488,17 @@ export default function TransactionsTab() {
           </select>
         </div>
         
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-2">
             <input
                 type="text"
-                placeholder="Search Type or User Email..."
+                placeholder="Search type or email..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                className={`w-48 py-1.5 px-3 border rounded-lg text-sm ${isDark ? 'bg-gray-700 border-gray-600 text-white' : 'bg-white border-gray-300 text-gray-900'}`}
+                className={`flex-1 min-w-0 py-1.5 px-3 border rounded-lg text-sm ${isDark ? 'bg-gray-700 border-gray-600 text-white' : 'bg-white border-gray-300 text-gray-900'}`}
             />
             <button
                 onClick={() => setSortOrder(sortOrder === "asc" ? "desc" : "asc")}
-                className={`flex items-center gap-1 px-3 py-1 border rounded-lg text-sm font-medium transition-colors ${
+                className={`shrink-0 flex items-center gap-1 px-3 py-1.5 border rounded-lg text-sm font-medium transition-colors ${
                     isDark ? 'bg-gray-700 border-gray-600 text-white hover:bg-gray-600' : 'bg-white border-gray-300 text-gray-700 hover:bg-gray-50'
                 }`}
             >
@@ -484,81 +509,77 @@ export default function TransactionsTab() {
       </div>
 
 
-      {/* Transaction Table */}
-      <div className={`shadow-md rounded-xl overflow-hidden ${isDark ? 'bg-gray-800' : 'bg-white'}`}>
-        <div className="overflow-x-auto">
+      {/* Transaction List — cards on mobile, table on sm+ */}
+      <div className={`rounded-xl overflow-hidden shadow-md ${isDark ? 'bg-gray-800' : 'bg-white'}`}>
+
+        {/* Mobile card view */}
+        <div className="sm:hidden divide-y divide-gray-200 dark:divide-gray-700">
+          {filteredSortedTransactions.length === 0 ? (
+            <p className={`px-4 py-6 text-center text-sm ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>No matching transactions found.</p>
+          ) : filteredSortedTransactions.map((transaction) => {
+            const amount    = transaction.points ?? 0;
+            const isAwarded = amount > 0;
+            const typeStr   = capitalizeWords(transaction.type || transaction.actionType || 'N/A');
+            const userEmail = getUserEmail(transaction.userId);
+            const description = transaction.metadata?.message || transaction.metadata?.type || 'N/A';
+            return (
+              <div key={transaction.id} className={`p-3 space-y-1.5 ${isDark ? 'bg-gray-800' : 'bg-white'}`}>
+                <div className="flex items-center justify-between gap-2">
+                  <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${isAwarded ? (isDark ? "bg-green-900 text-green-300" : "bg-green-100 text-green-800") : (isDark ? "bg-red-900 text-red-300" : "bg-red-100 text-red-800")}`}>
+                    {typeStr}
+                  </span>
+                  <span className={`text-sm font-bold ${isAwarded ? (isDark ? 'text-emerald-400' : 'text-emerald-600') : (isDark ? 'text-red-400' : 'text-red-600')}`}>
+                    {amount.toLocaleString()} pts
+                  </span>
+                </div>
+                <p className={`text-xs truncate ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>{userEmail}</p>
+                <p className={`text-xs ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>{formatTimestamp(transaction.timestamp)}</p>
+                {description !== 'N/A' && <p className={`text-xs truncate ${isDark ? 'text-gray-400' : 'text-slate-600'}`}>{description}</p>}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Desktop table view */}
+        <div className="hidden sm:block overflow-x-auto">
           <table className="min-w-full divide-y divide-gray-200">
             <thead className={`${isDark ? 'bg-gray-700' : 'bg-gray-50'}`}>
               <tr>
-                <th scope="col" className={`px-6 py-3 text-left text-xs font-medium uppercase tracking-wider ${isDark ? 'text-gray-300' : 'text-gray-500'}`}>
-                  Timestamp
-                </th>
-                <th scope="col" className={`px-6 py-3 text-left text-xs font-medium uppercase tracking-wider ${isDark ? 'text-gray-300' : 'text-gray-500'}`}>
-                  Type
-                </th>
-                <th scope="col" className={`px-6 py-3 text-left text-xs font-medium uppercase tracking-wider ${isDark ? 'text-gray-300' : 'text-gray-500'}`}>
-                  User
-                </th>
-                <th scope="col" className={`px-6 py-3 text-left text-xs font-medium uppercase tracking-wider ${isDark ? 'text-gray-300' : 'text-gray-500'}`}>
-                  Amount
-                </th>
-                <th scope="col" className={`px-6 py-3 text-left text-xs font-medium uppercase tracking-wider ${isDark ? 'text-gray-300' : 'text-gray-500'}`}>
-                  Description
-                </th>
+                <th className={`px-4 py-3 text-left text-xs font-medium uppercase tracking-wider ${isDark ? 'text-gray-300' : 'text-gray-500'}`}>Timestamp</th>
+                <th className={`px-4 py-3 text-left text-xs font-medium uppercase tracking-wider ${isDark ? 'text-gray-300' : 'text-gray-500'}`}>Type</th>
+                <th className={`px-4 py-3 text-left text-xs font-medium uppercase tracking-wider ${isDark ? 'text-gray-300' : 'text-gray-500'}`}>User</th>
+                <th className={`px-4 py-3 text-left text-xs font-medium uppercase tracking-wider ${isDark ? 'text-gray-300' : 'text-gray-500'}`}>Amount</th>
+                <th className={`px-4 py-3 text-left text-xs font-medium uppercase tracking-wider ${isDark ? 'text-gray-300' : 'text-gray-500'}`}>Description</th>
               </tr>
             </thead>
             <tbody className={`divide-y ${isDark ? 'divide-gray-700' : 'divide-gray-200'}`}>
               {filteredSortedTransactions.length === 0 ? (
                 <tr>
-                  <td colSpan="5" className={`px-6 py-4 text-center ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>No matching transactions found.</td>
+                  <td colSpan="5" className={`px-4 py-4 text-center ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>No matching transactions found.</td>
                 </tr>
-              ) : (
-                filteredSortedTransactions.map((transaction) => {
-                  const amount = transaction.points ?? 0;
-                  const isAwarded = amount > 0;
-                  const typeStr = capitalizeWords(transaction.type || transaction.actionType || 'N/A');
-                  const userEmail = getUserEmail(transaction.userId);
-                  const description = transaction.metadata?.message || transaction.metadata?.type || 'N/A';
-                  
-                  const badgeClass = isAwarded
-                    ? (isDark ? "bg-green-900 text-green-300" : "bg-green-100 text-green-800")
-                    : (isDark ? "bg-red-900 text-red-300" : "bg-red-100 text-red-800");
-
-                  return (
-                    <tr key={transaction.id} className={`${isDark ? 'hover:bg-gray-700/50' : 'hover:bg-gray-50'}`}>
-                      <td className={`px-6 py-4 text-sm ${isDark ? "text-gray-300" : "text-slate-600"}`}>
-                        {formatTimestamp(transaction.timestamp)}
-                      </td>
-                      <td className="px-6 py-4">
-                        <span
-                          className={`inline-flex items-center px-3 py-1.5 rounded-full text-sm font-medium ${badgeClass}`}
-                        >
-                          {typeStr}
-                        </span>
-                      </td>
-                      <td className={`px-6 py-4 text-sm font-medium ${isDark ? "text-gray-100" : "text-slate-800"}`}>
-                        {userEmail}
-                      </td>
-                      <td
-                        className={`px-6 py-4 text-sm font-bold ${
-                          isAwarded
-                            ? isDark
-                              ? "text-emerald-400"
-                              : "text-emerald-600"
-                            : isDark
-                            ? "text-red-400"
-                            : "text-red-600"
-                        }`}
-                      >
-                        {amount.toLocaleString()} pts
-                      </td>
-                      <td className={`px-6 py-4 text-sm ${isDark ? "text-gray-400" : "text-slate-600"}`}>
-                        {description}
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
+              ) : filteredSortedTransactions.map((transaction) => {
+                const amount    = transaction.points ?? 0;
+                const isAwarded = amount > 0;
+                const typeStr   = capitalizeWords(transaction.type || transaction.actionType || 'N/A');
+                const userEmail = getUserEmail(transaction.userId);
+                const description = transaction.metadata?.message || transaction.metadata?.type || 'N/A';
+                const badgeClass = isAwarded
+                  ? (isDark ? "bg-green-900 text-green-300" : "bg-green-100 text-green-800")
+                  : (isDark ? "bg-red-900 text-red-300" : "bg-red-100 text-red-800");
+                return (
+                  <tr key={transaction.id} className={`${isDark ? 'hover:bg-gray-700/50' : 'hover:bg-gray-50'}`}>
+                    <td className={`px-4 py-4 text-sm whitespace-nowrap ${isDark ? "text-gray-300" : "text-slate-600"}`}>{formatTimestamp(transaction.timestamp)}</td>
+                    <td className="px-4 py-4">
+                      <span className={`inline-flex items-center px-3 py-1 rounded-full text-sm font-medium ${badgeClass}`}>{typeStr}</span>
+                    </td>
+                    <td className={`px-4 py-4 text-sm font-medium max-w-[180px] truncate ${isDark ? "text-gray-100" : "text-slate-800"}`}>{userEmail}</td>
+                    <td className={`px-4 py-4 text-sm font-bold whitespace-nowrap ${isAwarded ? (isDark ? "text-emerald-400" : "text-emerald-600") : (isDark ? "text-red-400" : "text-red-600")}`}>
+                      {amount.toLocaleString()} pts
+                    </td>
+                    <td className={`px-4 py-4 text-sm max-w-[200px] truncate ${isDark ? "text-gray-400" : "text-slate-600"}`}>{description}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

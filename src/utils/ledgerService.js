@@ -9,7 +9,7 @@ import {
   getDocs, 
   query, 
   orderBy, 
-  limit 
+  limit
 } from "firebase/firestore";
 // CRITICAL: Correctly imports the shared hashing logic
 import { createBlockHash } from './blockchainService';
@@ -17,6 +17,10 @@ import { createBlockHash } from './blockchainService';
 /**
  * Adds a transaction to the immutable ledger.
  * Uses a Firebase Transaction to ensure no two users grab the same 'previous hash' at once.
+ *
+ * TRACKER RECONCILIATION: Before writing, we verify the tracker's latestHash matches
+ * the actual latest block in the ledger. If they diverge (e.g. a prior write failed
+ * mid-way), we use the real chain as source of truth. This prevents chain breaks.
  */
 export const addToLedger = async (userId, actionType, points, metadata = {}) => {
   const ledgerRef = collection(db, "ledger");
@@ -24,7 +28,7 @@ export const addToLedger = async (userId, actionType, points, metadata = {}) => 
 
   try {
     await runTransaction(db, async (transaction) => {
-      // 1. Get the latest block info
+      // 1. Get the latest block info from the tracker
       const sysDoc = await transaction.get(systemSettingsRef);
       
       let prevHash = "0"; // Genesis hash (start of chain)
@@ -32,7 +36,7 @@ export const addToLedger = async (userId, actionType, points, metadata = {}) => 
 
       if (sysDoc.exists()) {
         const data = sysDoc.data();
-        prevHash = data.latestHash || "0"; // Use existing hash or 0 if undefined
+        prevHash = data.latestHash || "0";
         index = (data.currentIndex || 0) + 1;
       }
 

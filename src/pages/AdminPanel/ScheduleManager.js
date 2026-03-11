@@ -22,6 +22,16 @@ import {
 } from "react-icons/fi";
 import { Scale, Recycle, AlertCircle, Truck } from "lucide-react";
 
+const initialOperatingDays = {
+  monday: { selected: true, startTime: "08:00", endTime: "17:00" },
+  tuesday: { selected: false, startTime: "08:00", endTime: "17:00" },
+  wednesday: { selected: false, startTime: "08:00", endTime: "17:00" },
+  thursday: { selected: false, startTime: "08:00", endTime: "17:00" },
+  friday: { selected: false, startTime: "08:00", endTime: "17:00" },
+  saturday: { selected: false, startTime: "08:00", endTime: "17:00" },
+  sunday: { selected: false, startTime: "08:00", endTime: "17:00" },
+};
+
 export default function ScheduleManager({ isDark, showToast }) {
   const [activeTab, setActiveTab] = useState("collection");
   const [collectionSchedules, setCollectionSchedules] = useState([]);
@@ -45,13 +55,11 @@ export default function ScheduleManager({ isDark, showToast }) {
     notes: "",
     isActive: true,
   });
- 
+
   const [submissionFormData, setSubmissionFormData] = useState({
     area: "",
     barangay: "",
-    day: "monday",
-    startTime: "08:00",
-    endTime: "17:00",
+    operatingDays: JSON.parse(JSON.stringify(initialOperatingDays)),
     allowedWasteTypes: [],
     maxSubmissionsPerDay: 50,
     requiresAppointment: false,
@@ -82,9 +90,6 @@ export default function ScheduleManager({ isDark, showToast }) {
     { value: "biweekly", label: "Bi-weekly" },
     { value: "monthly", label: "Monthly" },
   ];
-
-  
-
 
   // Fetch waste types
   useEffect(() => {
@@ -173,9 +178,7 @@ export default function ScheduleManager({ isDark, showToast }) {
     setSubmissionFormData({
       area: "",
       barangay: "",
-      day: "monday",
-      startTime: "08:00",
-      endTime: "17:00",
+      operatingDays: JSON.parse(JSON.stringify(initialOperatingDays)),
       allowedWasteTypes: [],
       maxSubmissionsPerDay: 50,
       requiresAppointment: false,
@@ -224,6 +227,13 @@ export default function ScheduleManager({ isDark, showToast }) {
     setLoading(true);
 
     try {
+      const hasSelectedDay = Object.values(submissionFormData.operatingDays).some(d => d.selected);
+      if (!hasSelectedDay) {
+        showToast?.("Please select at least one operating day", "error");
+        setLoading(false);
+        return;
+      }
+
       if (submissionFormData.allowedWasteTypes.length === 0) {
         showToast?.("Please select at least one waste type", "error");
         setLoading(false);
@@ -277,12 +287,22 @@ export default function ScheduleManager({ isDark, showToast }) {
         isActive: schedule.isActive !== undefined ? schedule.isActive : true,
       });
     } else {
+      let opsDays = JSON.parse(JSON.stringify(initialOperatingDays));
+      if (schedule.operatingDays) {
+        opsDays = { ...opsDays, ...schedule.operatingDays };
+      } else if (schedule.day) {
+        // Fallback migration for old single-day formats
+        opsDays[schedule.day] = { 
+            selected: true, 
+            startTime: schedule.startTime || "08:00", 
+            endTime: schedule.endTime || "17:00" 
+        };
+      }
+
       setSubmissionFormData({
         area: schedule.area || "",
         barangay: schedule.barangay || "",
-        day: schedule.day || "monday",
-        startTime: schedule.startTime || "08:00",
-        endTime: schedule.endTime || "17:00",
+        operatingDays: opsDays,
         allowedWasteTypes: schedule.allowedWasteTypes || [],
         maxSubmissionsPerDay: schedule.maxSubmissionsPerDay || 50,
         requiresAppointment: schedule.requiresAppointment || false,
@@ -358,7 +378,10 @@ export default function ScheduleManager({ isDark, showToast }) {
       schedule.area?.toLowerCase().includes(searchTerm.toLowerCase()) ||
       schedule.barangay?.toLowerCase().includes(searchTerm.toLowerCase());
 
-    const matchesDay = filterDay === "all" || schedule.day === filterDay;
+    const matchesDay = filterDay === "all" || 
+      (activeTab === "collection" 
+        ? schedule.day === filterDay 
+        : (schedule.operatingDays ? schedule.operatingDays[filterDay]?.selected : schedule.day === filterDay));
     
     const matchesWasteType = 
       filterWasteType === "all" || 
@@ -384,6 +407,29 @@ export default function ScheduleManager({ isDark, showToast }) {
     return `${formatTime(start)} - ${formatTime(end)}`;
   };
 
+  const renderOperatingHours = (schedule) => {
+    if (schedule.operatingDays) {
+      const selected = Object.entries(schedule.operatingDays).filter(([_, d]) => d.selected);
+      if (selected.length === 0) return <span className="text-red-500">No days configured</span>;
+      return (
+        <div className="flex flex-col gap-1">
+          {selected.map(([day, data]) => (
+            <span key={day} className={isDark ? "text-gray-300" : "text-slate-700"}>
+              <span className="capitalize inline-block w-9 font-medium">{day.slice(0, 3)}</span>: {formatTimeRange(data.startTime, data.endTime)}
+            </span>
+          ))}
+        </div>
+      );
+    } else if (schedule.day) {
+      // Fallback for old records
+      return (
+         <span className={isDark ? "text-gray-300" : "text-slate-700"}>
+           <span className="capitalize inline-block w-9 font-medium">{schedule.day.slice(0, 3)}</span>: {formatTimeRange(schedule.startTime, schedule.endTime)}
+         </span>
+      );
+    }
+    return null;
+  };
   
   return (
     <div className="space-y-4 lg:space-y-6">
@@ -606,45 +652,40 @@ export default function ScheduleManager({ isDark, showToast }) {
                     </span>
                   </div>
 
-                  <div className="space-y-2 mb-4">
-                    <div className="flex items-center gap-2 text-sm">
-                      <FiCalendar className={`w-4 h-4 ${
-                        activeTab === "collection" ? "text-indigo-500" : "text-green-500"
-                      }`} />
-                      <span
-                        className={isDark ? "text-gray-300" : "text-slate-700"}
-                      >
-                        {schedule.day?.charAt(0).toUpperCase() +
-                          schedule.day?.slice(1)}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-2 text-sm">
-                      <FiClock className={`w-4 h-4 ${
-                        activeTab === "collection" ? "text-indigo-500" : "text-green-500"
-                      }`} />
-                      <span
-                        className={isDark ? "text-gray-300" : "text-slate-700"}
-                      >
-                        {formatTimeRange(schedule.startTime, schedule.endTime)}
-                      </span>
-                    </div>
+                  <div className="space-y-3 mb-4">
+                    {/* Time fields based on tab */}
                     {activeTab === "collection" && (
-                      <div className="flex items-center gap-2 text-sm">
-                        <Recycle className="w-4 h-4 text-indigo-500" />
-                        <span
-                          className={isDark ? "text-gray-300" : "text-slate-700"}
-                        >
-                          {schedule.frequency}
-                        </span>
-                      </div>
-                    )}
-                    {activeTab === "submission" && (
                       <>
                         <div className="flex items-center gap-2 text-sm">
+                          <FiCalendar className={`w-4 h-4 text-indigo-500`} />
+                          <span className={isDark ? "text-gray-300" : "text-slate-700"}>
+                            {schedule.day?.charAt(0).toUpperCase() + schedule.day?.slice(1)}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2 text-sm">
+                          <FiClock className={`w-4 h-4 text-indigo-500`} />
+                          <span className={isDark ? "text-gray-300" : "text-slate-700"}>
+                            {formatTimeRange(schedule.startTime, schedule.endTime)}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2 text-sm">
+                          <Recycle className="w-4 h-4 text-indigo-500" />
+                          <span className={isDark ? "text-gray-300" : "text-slate-700"}>
+                            {schedule.frequency}
+                          </span>
+                        </div>
+                      </>
+                    )}
+
+                    {activeTab === "submission" && (
+                      <>
+                        <div className="flex items-start gap-2 text-sm">
+                          <FiClock className="w-4 h-4 text-green-500 mt-0.5 flex-shrink-0" />
+                          {renderOperatingHours(schedule)}
+                        </div>
+                        <div className="flex items-center gap-2 text-sm">
                           <FiUsers className="w-4 h-4 text-green-500" />
-                          <span
-                            className={isDark ? "text-gray-300" : "text-slate-700"}
-                          >
+                          <span className={isDark ? "text-gray-300" : "text-slate-700"}>
                             Max {schedule.maxSubmissionsPerDay} submissions/day
                           </span>
                         </div>
@@ -660,6 +701,7 @@ export default function ScheduleManager({ isDark, showToast }) {
                     )}
                   </div>
 
+                  {/* Waste types section */}
                   {((activeTab === "collection" && schedule.wasteTypes?.length > 0) ||
                     (activeTab === "submission" && schedule.allowedWasteTypes?.length > 0)) && (
                     <div className="mb-4">
@@ -756,6 +798,8 @@ export default function ScheduleManager({ isDark, showToast }) {
               </h3>
 
               <form onSubmit={activeTab === "collection" ? handleCollectionSubmit : handleSubmissionSubmit} className="space-y-4">
+                
+                {/* Area and Barangay - Shared */}
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <label
@@ -808,136 +852,170 @@ export default function ScheduleManager({ isDark, showToast }) {
                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label
-                      className={`block text-sm font-medium mb-1 ${
-                        isDark ? "text-gray-300" : "text-slate-700"
-                      }`}
-                    >
-                      Day *
-                    </label>
-                    <select
-                      required
-                      value={activeTab === "collection" ? collectionFormData.day : submissionFormData.day}
-                      onChange={(e) =>
-                        activeTab === "collection"
-                          ? setCollectionFormData((prev) => ({ ...prev, day: e.target.value }))
-                          : setSubmissionFormData((prev) => ({ ...prev, day: e.target.value }))
-                      }
-                      className={`w-full px-3 py-2 rounded-lg border text-sm ${
-                        isDark
-                          ? "bg-gray-700 border-gray-600 text-gray-200"
-                          : "bg-white border-slate-300 text-slate-900"
-                      }`}
-                    >
-                      {daysOfWeek.map((day) => (
-                        <option key={day} value={day}>
-                          {day.charAt(0).toUpperCase() + day.slice(1)}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label
-                      className={`block text-sm font-medium mb-1 ${
-                        isDark ? "text-gray-300" : "text-slate-700"
-                      }`}
-                    >
-                      {activeTab === "collection" ? "Frequency *" : "Max Submissions/Day *"}
-                    </label>
-                    {activeTab === "collection" ? (
-                      <select
-                        required
-                        value={collectionFormData.frequency}
-                        onChange={(e) =>
-                          setCollectionFormData((prev) => ({ ...prev, frequency: e.target.value }))
-                        }
-                        className={`w-full px-3 py-2 rounded-lg border text-sm ${
-                          isDark
-                            ? "bg-gray-700 border-gray-600 text-gray-200"
-                            : "bg-white border-slate-300 text-slate-900"
-                        }`}
-                      >
-                        {frequencyOptions.map((freq) => (
-                          <option key={freq.value} value={freq.value}>
-                            {freq.label}
-                          </option>
-                        ))}
-                      </select>
-                    ) : (
-                      <input
-                        type="number"
-                        required
-                        min="1"
-                        value={submissionFormData.maxSubmissionsPerDay}
-                        onChange={(e) =>
-                          setSubmissionFormData((prev) => ({ ...prev, maxSubmissionsPerDay: e.target.value }))
-                        }
-                        className={`w-full px-3 py-2 rounded-lg border text-sm ${
-                          isDark
-                            ? "bg-gray-700 border-gray-600 text-gray-200"
-                            : "bg-white border-slate-300 text-slate-900"
-                        }`}
-                      />
-                    )}
-                  </div>
-                </div>
+                {/* Specifics based on Schedule Type */}
+                {activeTab === "collection" ? (
+                  <>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <label className={`block text-sm font-medium mb-1 ${isDark ? "text-gray-300" : "text-slate-700"}`}>
+                          Day *
+                        </label>
+                        <select
+                          required
+                          value={collectionFormData.day}
+                          onChange={(e) => setCollectionFormData((prev) => ({ ...prev, day: e.target.value }))}
+                          className={`w-full px-3 py-2 rounded-lg border text-sm ${isDark ? "bg-gray-700 border-gray-600 text-gray-200" : "bg-white border-slate-300 text-slate-900"}`}
+                        >
+                          {daysOfWeek.map((day) => (
+                            <option key={day} value={day}>{day.charAt(0).toUpperCase() + day.slice(1)}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className={`block text-sm font-medium mb-1 ${isDark ? "text-gray-300" : "text-slate-700"}`}>
+                          Frequency *
+                        </label>
+                        <select
+                          required
+                          value={collectionFormData.frequency}
+                          onChange={(e) => setCollectionFormData((prev) => ({ ...prev, frequency: e.target.value }))}
+                          className={`w-full px-3 py-2 rounded-lg border text-sm ${isDark ? "bg-gray-700 border-gray-600 text-gray-200" : "bg-white border-slate-300 text-slate-900"}`}
+                        >
+                          {frequencyOptions.map((freq) => (
+                            <option key={freq.value} value={freq.value}>{freq.label}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
 
-                {/* Time Range */}
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label
-                      className={`block text-sm font-medium mb-1 ${
-                        isDark ? "text-gray-300" : "text-slate-700"
-                      }`}
-                    >
-                      Start Time *
-                    </label>
-                    <input
-                      type="time"
-                      required
-                      value={activeTab === "collection" ? collectionFormData.startTime : submissionFormData.startTime}
-                      onChange={(e) =>
-                        activeTab === "collection"
-                          ? setCollectionFormData((prev) => ({ ...prev, startTime: e.target.value }))
-                          : setSubmissionFormData((prev) => ({ ...prev, startTime: e.target.value }))
-                      }
-                      className={`w-full px-3 py-2 rounded-lg border text-sm ${
-                        isDark
-                          ? "bg-gray-700 border-gray-600 text-gray-200"
-                          : "bg-white border-slate-300 text-slate-900"
-                      }`}
-                    />
-                  </div>
-                  <div>
-                    <label
-                      className={`block text-sm font-medium mb-1 ${
-                        isDark ? "text-gray-300" : "text-slate-700"
-                      }`}
-                    >
-                      End Time *
-                    </label>
-                    <input
-                      type="time"
-                      required
-                      value={activeTab === "collection" ? collectionFormData.endTime : submissionFormData.endTime}
-                      onChange={(e) =>
-                        activeTab === "collection"
-                          ? setCollectionFormData((prev) => ({ ...prev, endTime: e.target.value }))
-                          : setSubmissionFormData((prev) => ({ ...prev, endTime: e.target.value }))
-                      }
-                      className={`w-full px-3 py-2 rounded-lg border text-sm ${
-                        isDark
-                          ? "bg-gray-700 border-gray-600 text-gray-200"
-                          : "bg-white border-slate-300 text-slate-900"
-                      }`}
-                    />
-                  </div>
-                </div>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <label className={`block text-sm font-medium mb-1 ${isDark ? "text-gray-300" : "text-slate-700"}`}>
+                          Start Time *
+                        </label>
+                        <input
+                          type="time"
+                          required
+                          value={collectionFormData.startTime}
+                          onChange={(e) => setCollectionFormData((prev) => ({ ...prev, startTime: e.target.value }))}
+                          className={`w-full px-3 py-2 rounded-lg border text-sm ${isDark ? "bg-gray-700 border-gray-600 text-gray-200" : "bg-white border-slate-300 text-slate-900"}`}
+                        />
+                      </div>
+                      <div>
+                        <label className={`block text-sm font-medium mb-1 ${isDark ? "text-gray-300" : "text-slate-700"}`}>
+                          End Time *
+                        </label>
+                        <input
+                          type="time"
+                          required
+                          value={collectionFormData.endTime}
+                          onChange={(e) => setCollectionFormData((prev) => ({ ...prev, endTime: e.target.value }))}
+                          className={`w-full px-3 py-2 rounded-lg border text-sm ${isDark ? "bg-gray-700 border-gray-600 text-gray-200" : "bg-white border-slate-300 text-slate-900"}`}
+                        />
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <label className={`block text-sm font-medium mb-1 ${isDark ? "text-gray-300" : "text-slate-700"}`}>
+                          Max Submissions/Day *
+                        </label>
+                        <input
+                          type="number"
+                          required
+                          min="1"
+                          value={submissionFormData.maxSubmissionsPerDay}
+                          onChange={(e) => setSubmissionFormData((prev) => ({ ...prev, maxSubmissionsPerDay: e.target.value }))}
+                          className={`w-full px-3 py-2 rounded-lg border text-sm ${isDark ? "bg-gray-700 border-gray-600 text-gray-200" : "bg-white border-slate-300 text-slate-900"}`}
+                        />
+                      </div>
+                      <div className="flex items-center mt-6">
+                        <label className={`flex items-center gap-2 cursor-pointer ${isDark ? "text-gray-300" : "text-slate-700"}`}>
+                          <input
+                            type="checkbox"
+                            checked={submissionFormData.requiresAppointment}
+                            onChange={(e) => setSubmissionFormData((prev) => ({ ...prev, requiresAppointment: e.target.checked }))}
+                            className="w-4 h-4 text-green-600 rounded focus:ring-2 focus:ring-green-500"
+                          />
+                          <span className="text-sm font-medium">Requires Appointment</span>
+                        </label>
+                      </div>
+                    </div>
+
+                    {/* Multi-Day Selection Logic */}
+                    <div className="space-y-2 pt-2">
+                      <label className={`block text-sm font-medium ${isDark ? "text-gray-300" : "text-slate-700"}`}>
+                        Operating Days & Hours *
+                      </label>
+                      <div className={`border rounded-lg p-4 space-y-3 ${isDark ? "border-gray-600 bg-gray-700/30" : "border-slate-200 bg-slate-50"}`}>
+                        {daysOfWeek.map(day => (
+                          <div key={day} className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4">
+                             <label className="flex items-center gap-2 min-w-[120px] cursor-pointer">
+                               <input 
+                                  type="checkbox" 
+                                  checked={submissionFormData.operatingDays[day].selected}
+                                  onChange={(e) => {
+                                     setSubmissionFormData(prev => ({
+                                        ...prev,
+                                        operatingDays: {
+                                           ...prev.operatingDays,
+                                           [day]: { ...prev.operatingDays[day], selected: e.target.checked }
+                                        }
+                                     }))
+                                  }}
+                                  className="w-4 h-4 text-green-600 rounded focus:ring-2 focus:ring-green-500"
+                               />
+                               <span className={`capitalize text-sm font-medium ${isDark ? "text-gray-300" : "text-slate-700"}`}>
+                                 {day}
+                               </span>
+                             </label>
+                             
+                             {submissionFormData.operatingDays[day].selected && (
+                                <div className="flex items-center gap-2 ml-6 sm:ml-0">
+                                  <input 
+                                     type="time" 
+                                     required
+                                     value={submissionFormData.operatingDays[day].startTime}
+                                     onChange={(e) => {
+                                         setSubmissionFormData(prev => ({
+                                            ...prev,
+                                            operatingDays: {
+                                               ...prev.operatingDays,
+                                               [day]: { ...prev.operatingDays[day], startTime: e.target.value }
+                                            }
+                                         }))
+                                     }}
+                                     className={`px-2 py-1 rounded border text-sm ${isDark ? "bg-gray-800 border-gray-600 text-gray-200" : "bg-white border-slate-300 text-slate-900"}`}
+                                  />
+                                  <span className={`text-sm ${isDark ? "text-gray-400" : "text-slate-500"}`}>to</span>
+                                  <input 
+                                     type="time" 
+                                     required
+                                     value={submissionFormData.operatingDays[day].endTime}
+                                     onChange={(e) => {
+                                         setSubmissionFormData(prev => ({
+                                            ...prev,
+                                            operatingDays: {
+                                               ...prev.operatingDays,
+                                               [day]: { ...prev.operatingDays[day], endTime: e.target.value }
+                                            }
+                                         }))
+                                     }}
+                                     className={`px-2 py-1 rounded border text-sm ${isDark ? "bg-gray-800 border-gray-600 text-gray-200" : "bg-white border-slate-300 text-slate-900"}`}
+                                  />
+                                </div>
+                             )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </>
+                )}
 
                 {/* Waste Types */}
-                <div>
+                <div className="pt-2">
                   <label
                     className={`block text-sm font-medium mb-2 ${
                       isDark ? "text-gray-300" : "text-slate-700"
@@ -975,8 +1053,8 @@ export default function ScheduleManager({ isDark, showToast }) {
                             submissionFormData.allowedWasteTypes.includes(type.name)
                               ? "bg-green-600 text-white border-green-600"
                               : isDark
-                              ? "bg-gray-700 border-gray-600 text-gray-300"
-                              : "bg-white border-slate-300 text-slate-700"
+                              ? "bg-gray-700 border-gray-600 text-gray-300 hover:bg-gray-600"
+                              : "bg-white border-slate-300 text-slate-700 hover:bg-slate-50"
                           }`}
                         >
                           <input
@@ -998,27 +1076,6 @@ export default function ScheduleManager({ isDark, showToast }) {
                     )}
                   </div>
                 </div>
-
-                {/* Requires Appointment (Submission only) */}
-                {activeTab === "submission" && (
-                  <div>
-                    <label
-                      className={`flex items-center gap-2 cursor-pointer ${
-                        isDark ? "text-gray-300" : "text-slate-700"
-                      }`}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={submissionFormData.requiresAppointment}
-                        onChange={(e) =>
-                          setSubmissionFormData((prev) => ({ ...prev, requiresAppointment: e.target.checked }))
-                        }
-                        className="w-4 h-4 text-green-600 rounded focus:ring-2 focus:ring-green-500"
-                      />
-                      <span className="text-sm font-medium">Requires Appointment</span>
-                    </label>
-                  </div>
-                )}
 
                 {/* Notes */}
                 <div>

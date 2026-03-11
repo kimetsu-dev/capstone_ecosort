@@ -209,6 +209,12 @@ function CompactRewardCard({ reward, onClick }) {
 // --- REWARD DETAIL MODAL ---
 function RewardDetailModal({ reward, visible, onClose, userPoints, onRedeem, isPWA }) {
   const { isDark } = useTheme();
+  const [quantity, setQuantity] = useState(1);
+
+  // Reset quantity whenever the modal opens on a new reward
+  useEffect(() => {
+    if (visible) setQuantity(1);
+  }, [visible, reward?.id]);
 
   useEffect(() => {
     if (visible && isPWA) { 
@@ -231,7 +237,9 @@ function RewardDetailModal({ reward, visible, onClose, userPoints, onRedeem, isP
   };
 
   const stockStatus = getStockStatus();
-  const canRedeem = userPoints >= reward.cost && reward.stock > 0;
+  const maxQty = Math.min(reward.stock || 0, Math.floor(userPoints / (reward.cost || 1)));
+  const totalCost = reward.cost * quantity;
+  const canRedeem = userPoints >= totalCost && reward.stock >= quantity && quantity >= 1;
 
   return (
     <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-start justify-center z-50 p-4 animate-fadeIn overflow-y-auto">
@@ -304,21 +312,69 @@ function RewardDetailModal({ reward, visible, onClose, userPoints, onRedeem, isP
         </div>
 
         <div className={`flex-shrink-0 p-4 border-t ${isDark ? "border-gray-700 bg-gray-800" : "border-gray-100 bg-white"}`}>
+          {/* Points row */}
           <div className="flex items-center justify-between mb-3 text-sm">
              <span className={isDark ? "text-gray-400" : "text-gray-500"}>Your Points:</span>
-             <span className={`font-bold ${userPoints < reward.cost ? "text-red-500" : (isDark ? "text-white" : "text-gray-900")}`}>
+             <span className={`font-bold ${userPoints < totalCost ? "text-red-500" : (isDark ? "text-white" : "text-gray-900")}`}>
                {userPoints.toLocaleString()}
              </span>
           </div>
-          
+
+          {/* Quantity stepper — only show when in stock */}
+          {reward.stock > 0 && (
+            <div className="flex items-center justify-between mb-3">
+              <span className={`text-sm ${isDark ? "text-gray-400" : "text-gray-500"}`}>Quantity:</span>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => setQuantity((q) => Math.max(1, q - 1))}
+                  disabled={quantity <= 1}
+                  className={`w-8 h-8 rounded-full font-bold text-lg flex items-center justify-center transition-all
+                    ${quantity <= 1
+                      ? (isDark ? "bg-gray-700 text-gray-600 cursor-not-allowed" : "bg-gray-100 text-gray-300 cursor-not-allowed")
+                      : (isDark ? "bg-gray-600 text-white hover:bg-gray-500 active:scale-90" : "bg-gray-200 text-gray-700 hover:bg-gray-300 active:scale-90")
+                    }`}
+                  aria-label="Decrease quantity"
+                >
+                  −
+                </button>
+                <span className={`w-6 text-center font-bold text-base ${isDark ? "text-white" : "text-gray-900"}`}>
+                  {quantity}
+                </span>
+                <button
+                  onClick={() => setQuantity((q) => Math.min(maxQty, q + 1))}
+                  disabled={quantity >= maxQty}
+                  className={`w-8 h-8 rounded-full font-bold text-lg flex items-center justify-center transition-all
+                    ${quantity >= maxQty
+                      ? (isDark ? "bg-gray-700 text-gray-600 cursor-not-allowed" : "bg-gray-100 text-gray-300 cursor-not-allowed")
+                      : "bg-indigo-600 text-white hover:bg-indigo-500 active:scale-90"
+                    }`}
+                  aria-label="Increase quantity"
+                >
+                  +
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Total cost row */}
+          {reward.stock > 0 && quantity > 1 && (
+            <div className="flex items-center justify-between mb-3 text-sm">
+              <span className={isDark ? "text-gray-400" : "text-gray-500"}>Total Cost:</span>
+              <span className={`font-bold flex items-center gap-1 ${userPoints < totalCost ? "text-red-500" : "text-amber-500"}`}>
+                <Coins className="w-3.5 h-3.5" />
+                {totalCost.toLocaleString()}
+              </span>
+            </div>
+          )}
+
           {canRedeem ? (
             <button
-              onClick={() => onRedeem(reward)}
+              onClick={() => onRedeem(reward, quantity)}
               className="w-full py-3.5 rounded-xl font-bold text-white shadow-lg shadow-green-500/20
                 bg-gradient-to-r from-green-500 to-emerald-600 
                 active:scale-95 transition-transform"
             >
-              Redeem Now
+              {quantity > 1 ? `Redeem ${quantity}×` : "Redeem Now"}
             </button>
           ) : (
             <button
@@ -378,6 +434,8 @@ function SuccessModal({ visible, reward, code, onClose }) {
 
   if (!visible || !reward) return null;
 
+  const quantity = reward.quantity || 1;
+
   const handleCopyCode = () => {
     if (code) {
       navigator.clipboard.writeText(code).then(() => {
@@ -401,11 +459,13 @@ function SuccessModal({ visible, reward, code, onClose }) {
           <h3 className="text-xl sm:text-2xl font-bold mb-2 sm:mb-3">Success!</h3>
           <p className={`text-sm sm:text-base ${isDark ? "text-gray-300" : "text-gray-600"} mb-4 sm:mb-6`}>
             You've successfully redeemed{" "}
-            <span className={`font-semibold ${isDark ? "text-purple-400" : "text-purple-600"}`}>{reward.name}</span>.
+            <span className={`font-semibold ${isDark ? "text-purple-400" : "text-purple-600"}`}>
+              {quantity > 1 ? `${quantity}× ${reward.name}` : reward.name}
+            </span>.
           </p>
           <div className={`p-3 sm:p-4 rounded-xl mb-4 sm:mb-6 ${isDark ? "bg-red-900/20 border border-red-500/30" : "bg-red-50 border border-red-200"}`}>
             <p className={`font-semibold mb-2 sm:mb-3 text-sm sm:text-base ${isDark ? "text-red-300" : "text-red-600"}`}>
-              Present this code onsite to claim your reward:
+              Present this code onsite to claim your reward{quantity > 1 ? "s" : ""}:
             </p>
             <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
               <div className="flex-1 text-xl sm:text-2xl font-mono font-bold text-center select-all border-2 border-dashed border-indigo-600/50 rounded-lg py-2 sm:py-3 px-3 sm:px-4 bg-indigo-50 text-indigo-900 tracking-widest">
@@ -560,20 +620,21 @@ export default function Rewards() {
     setSelectedReward(null);
   };
 
-  const startRedeemReward = (reward) => {
+  const startRedeemReward = (reward, quantity = 1) => {
     if (!currentUser) {
       showToast("Please log in to redeem rewards.", "error");
       return;
     }
-    if (userPoints < reward.cost) {
+    const totalCost = reward.cost * quantity;
+    if (userPoints < totalCost) {
       showToast("Not enough points to redeem.", "error");
       return;
     }
-    if (reward.stock === 0) {
-      showToast("Reward out of stock.", "error");
+    if (reward.stock < quantity) {
+      showToast("Not enough stock available.", "error");
       return;
     }
-    setRewardPendingConfirmation(reward);
+    setRewardPendingConfirmation({ ...reward, quantity });
     setConfirmModalVisible(true);
     setShowDetailModal(false); 
   };
@@ -583,74 +644,95 @@ export default function Rewards() {
     
     setConfirmLoading(true);
     const reward = rewardPendingConfirmation;
-    const code = generateRedemptionCode(); 
+    const quantity = reward.quantity || 1;
+    const totalCost = reward.cost * quantity;
+
+    // One code covers the entire redemption regardless of quantity
+    const code = generateRedemptionCode();
 
     try {
-      const { newPoints, newStock, redemptionId } = await runTransaction(db, async (transaction) => {
-        const userRef = doc(db, "users", currentUser.uid);
-        const rewardRef = doc(db, "rewards", reward.id);
-        const redemptionRef = doc(collection(db, "redemptions")); 
+      // Run one Firestore transaction per unit so each write does stock - 1,
+      // which satisfies the Firestore security rule:
+      //   request.resource.data.stock == resource.data.stock - 1
+      let newPoints = userPoints;
+      let newStock = reward.stock;
+      const redemptionIds = [];
 
-        const userDoc = await transaction.get(userRef);
-        const rewardDoc = await transaction.get(rewardRef);
+      for (let i = 0; i < quantity; i++) {
+        const result = await runTransaction(db, async (transaction) => {
+          const userRef = doc(db, "users", currentUser.uid);
+          const rewardRef = doc(db, "rewards", reward.id);
+          const redemptionRef = doc(collection(db, "redemptions"));
 
-        if (!userDoc.exists()) throw new Error("User data not found.");
-        if (!rewardDoc.exists()) throw new Error("Reward not found.");
+          const userDoc = await transaction.get(userRef);
+          const rewardDoc = await transaction.get(rewardRef);
 
-        const currentPoints = userDoc.data().totalPoints || 0;
-        const currentStock = rewardDoc.data().stock || 0;
+          if (!userDoc.exists()) throw new Error("User data not found.");
+          if (!rewardDoc.exists()) throw new Error("Reward not found.");
 
-        const calculatedNewPoints = currentPoints - reward.cost;
-        const calculatedNewStock = currentStock - 1;
+          const currentPoints = userDoc.data().totalPoints || 0;
+          const currentStock = rewardDoc.data().stock || 0;
 
-        if (calculatedNewPoints < 0) throw new Error("Insufficient points");
-        if (calculatedNewStock < 0) throw new Error("Out of stock");
+          const calculatedNewPoints = currentPoints - reward.cost;
+          const calculatedNewStock = currentStock - 1;
 
-        transaction.update(userRef, { totalPoints: calculatedNewPoints });
-        transaction.update(rewardRef, { stock: calculatedNewStock });
+          if (calculatedNewPoints < 0) throw new Error("Insufficient points");
+          if (calculatedNewStock < 0) throw new Error("Out of stock");
 
-        transaction.set(redemptionRef, {
-          userId: currentUser.uid,
-          userEmail: currentUser.email, 
-          rewardId: reward.id,
-          rewardName: reward.name, 
-          cost: reward.cost,
-          redeemedAt: serverTimestamp(),
-          status: "pending", 
-          redemptionCode: code,
+          transaction.update(userRef, { totalPoints: calculatedNewPoints });
+          transaction.update(rewardRef, { stock: calculatedNewStock });
+
+          transaction.set(redemptionRef, {
+            userId: currentUser.uid,
+            userEmail: currentUser.email,
+            rewardId: reward.id,
+            rewardName: reward.name,
+            cost: reward.cost,
+            redeemedAt: serverTimestamp(),
+            status: "pending",
+            redemptionCode: code,
+          });
+
+          return {
+            newPoints: calculatedNewPoints,
+            newStock: calculatedNewStock,
+            redemptionId: redemptionRef.id,
+          };
         });
 
-        return { 
-            newPoints: calculatedNewPoints, 
-            newStock: calculatedNewStock,
-            redemptionId: redemptionRef.id 
-        };
-      });
-
-      try {
-          await addToLedger(
-            currentUser.uid,
-            "REWARD_REDEEMED",
-            -Math.abs(reward.cost), 
-            {
-              rewardId: reward.id,
-              rewardName: reward.name,
-              redemptionCode: code,
-              firestoreId: redemptionId
-            }
-          );
-      } catch (ledgerError) {
-          console.error("⚠️ Ledger Error:", ledgerError);
+        newPoints = result.newPoints;
+        newStock = result.newStock;
+        redemptionIds.push(result.redemptionId);
       }
 
+      // Ledger entry — log total cost as a single ledger event
+      try {
+        await addToLedger(
+          currentUser.uid,
+          "REWARD_REDEEMED",
+          -Math.abs(totalCost),
+          {
+            rewardId: reward.id,
+            rewardName: reward.name,
+            quantity,
+            redemptionCode: code,
+            firestoreIds: redemptionIds,
+          }
+        );
+      } catch (ledgerError) {
+        console.error("⚠️ Ledger Error:", ledgerError);
+      }
+
+      // Single point_transactions record summarising the batch
       try {
         await addDoc(collection(db, "point_transactions"), {
           userId: currentUser.uid,
           type: "points_redeemed",
-          points: -Math.abs(reward.cost),
-          description: `Redeemed: ${reward.name}`,
+          points: -Math.abs(totalCost),
+          description: `Redeemed${quantity > 1 ? ` ${quantity}×` : ""}: ${reward.name}`,
           rewardName: reward.name,
           rewardId: reward.id,
+          quantity,
           category: reward.category || "reward",
           timestamp: serverTimestamp(),
         });
@@ -666,7 +748,12 @@ export default function Rewards() {
       setRedemptionCode(code);
       setShowSuccessModal(true);
 
-      showToast("Reward redeemed! Please claim it onsite.", "success");
+      showToast(
+        quantity > 1
+          ? `${quantity} rewards redeemed! Please claim them onsite.`
+          : "Reward redeemed! Please claim it onsite.",
+        "success"
+      );
 
     } catch (error) {
       console.error("❌ Redemption failed:", error);
@@ -701,7 +788,7 @@ export default function Rewards() {
        <div
         className={`${
           isDark ? "bg-gray-800/90 border-gray-700" : "bg-white/90 border-gray-200"
-        } backdrop-blur-md border-b sticky top-0 z-40 transition-colors duration-300`}
+        } backdrop-blur-md border-b transition-colors duration-300`}
       >
         <div className={`${isPWA ? 'px-4 sm:px-6' : 'max-w-7xl mx-auto px-4 sm:px-6 lg:px-8'} py-3 sm:py-4`}>
           
@@ -872,9 +959,19 @@ export default function Rewards() {
       <ConfirmModal
         visible={confirmModalVisible}
         message={
-          "Please confirm your redemption request.\n\n" +
-          "⚠️ You will receive a unique redemption code after confirming.\n" +
-          "You MUST show this code onsite to claim your reward physically."
+          (() => {
+            const qty = rewardPendingConfirmation?.quantity || 1;
+            const cost = rewardPendingConfirmation?.cost || 0;
+            const name = rewardPendingConfirmation?.name || "";
+            const totalCost = cost * qty;
+            const qtyLine = qty > 1 ? `Quantity: ${qty}×  (Total: ${totalCost} pts)\n\n` : "";
+            return (
+              `Please confirm your redemption request.\n\n` +
+              qtyLine +
+              `⚠️ You will receive 1 unique redemption code after confirming.\n` +
+              `You MUST show this code onsite to claim your reward physically.`
+            );
+          })()
         }
         onConfirm={confirmRedeemReward}
         onCancel={() => {

@@ -986,10 +986,10 @@ export default function Forum() {
   }, [items, activeTab, filterType, searchQuery]);
 
   return (
-    <div className={`min-h-screen ${isDark ? "bg-gray-900 text-white" : "bg-gray-50 text-slate-900"}`}>
+    <div className={`${isDark ? "bg-gray-900 text-white" : "bg-gray-50 text-slate-900"}`}>
       
       {/* --- HEADER --- */}
-      <header className={`sticky top-0 z-40 backdrop-blur-xl border-b shadow-sm ${isDark ? "bg-gray-900/90 border-gray-700" : "bg-white/90 border-slate-200"}`}>
+      <header className={`border-b shadow-sm ${isDark ? "bg-gray-900/90 border-gray-700" : "bg-white/90 border-slate-200"}`}>
         <div className="max-w-6xl mx-auto px-4 py-4">
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
             <h1 className="text-2xl font-bold flex items-center gap-2 tracking-tight">

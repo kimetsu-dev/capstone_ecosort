@@ -23,6 +23,14 @@
         { "fieldPath": "userId", "order": "ASCENDING" },
         { "fieldPath": "timestamp", "order": "DESCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "wasteSubmissions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath": "timestamp", "order": "ASCENDING"},
+        {"fieldPath": "pointsAwarded", "order": "DESCENDING"}
+      ]
     }
   ],
   "fieldOverrides": []

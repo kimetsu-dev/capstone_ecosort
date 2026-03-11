@@ -132,17 +132,17 @@ const LedgerTab = () => {
   );
 
   return (
-    <div className="p-6">
+    <div className="p-3 sm:p-6 w-full overflow-hidden">
       {/* Header with Educational Toggles */}
-      <div className="flex flex-col md:flex-row md:items-center md:justify-between mb-6 gap-4">
-        <h1 className={`text-3xl font-bold ${isDark ? 'text-white' : 'text-gray-800'}`}>
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-6 gap-3">
+        <h1 className={`text-2xl sm:text-3xl font-bold ${isDark ? 'text-white' : 'text-gray-800'}`}>
           Immutable Ledger (Blockchain)
         </h1>
         
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <button
             onClick={() => setShowWhyBlockchain(!showWhyBlockchain)}
-            className={`px-4 py-2 rounded-lg font-medium flex items-center gap-2 transition-colors ${
+            className={`px-3 py-2 rounded-lg font-medium flex items-center gap-2 transition-colors text-sm ${
               showWhyBlockchain 
                 ? isDark ? "bg-indigo-600 text-white" : "bg-indigo-500 text-white"
                 : isDark ? "bg-gray-700 text-gray-300 hover:bg-gray-600" : "bg-gray-200 text-gray-700 hover:bg-gray-300"
@@ -154,7 +154,7 @@ const LedgerTab = () => {
           
           <button
             onClick={() => setShowTechnicalDetails(!showTechnicalDetails)}
-            className={`px-4 py-2 rounded-lg font-medium flex items-center gap-2 transition-colors ${
+            className={`px-3 py-2 rounded-lg font-medium flex items-center gap-2 transition-colors text-sm ${
               showTechnicalDetails 
                 ? isDark ? "bg-purple-600 text-white" : "bg-purple-500 text-white"
                 : isDark ? "bg-gray-700 text-gray-300 hover:bg-gray-600" : "bg-gray-200 text-gray-700 hover:bg-gray-300"
@@ -498,7 +498,7 @@ const LedgerTab = () => {
                       </span>
                   </div>
 
-                  <p className="text-xs font-mono mt-1 opacity-70">
+                  <p className="text-xs font-mono mt-1 opacity-70 break-all">
                       Immutable Ledger Total: {externalDataStatus.ledgerTotal} | External DB Total: {externalDataStatus.transactionsTotal}
                   </p>
               </div>
@@ -528,49 +528,50 @@ const LedgerTab = () => {
           {filteredBlocks.map((block) => (
             <div 
               key={block.id} 
-              className={`p-4 rounded-xl shadow-sm border ${isDark ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-100'}`}
+              className={`p-3 sm:p-4 rounded-xl shadow-sm border overflow-hidden ${isDark ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-100'}`}
             >
-              <div className="flex justify-between items-start">
-                  <div className="flex items-center gap-4">
-                      <div className={`font-bold w-10 h-10 rounded-full flex items-center justify-center text-lg flex-shrink-0 ${isDark ? 'bg-indigo-900/50 text-indigo-300' : 'bg-indigo-50 text-indigo-700'}`}>
-                          <Box className='w-5 h-5'/>
+              <div className="flex justify-between items-start gap-2 min-w-0">
+                  <div className="flex items-center gap-2 sm:gap-4 min-w-0 flex-1">
+                      <div className={`font-bold w-9 h-9 sm:w-10 sm:h-10 rounded-full flex items-center justify-center flex-shrink-0 ${isDark ? 'bg-indigo-900/50 text-indigo-300' : 'bg-indigo-50 text-indigo-700'}`}>
+                          <Box className='w-4 h-4 sm:w-5 sm:h-5'/>
                       </div>
-                      <div>
-                          <div className={`font-semibold text-base ${isDark ? 'text-white' : 'text-gray-800'}`}>
+                      <div className="min-w-0 flex-1">
+                          <div className={`font-semibold text-sm sm:text-base truncate ${isDark ? 'text-white' : 'text-gray-800'}`}>
                               Block #{block.index} - {block.actionType}
                           </div>
-                          <div className={`text-sm mt-1 flex items-center gap-4 ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
-                            <span className="flex items-center gap-1">
-                                <User className="w-3 h-3" /> {block.userId}
+                          <div className={`text-xs sm:text-sm mt-1 flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-4 ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
+                            <span className="flex items-center gap-1 min-w-0">
+                                <User className="w-3 h-3 shrink-0" />
+                                <span className="truncate">{block.userId}</span>
                             </span>
-                            <span className="flex items-center gap-1">
-                                <Clock className="w-3 h-3" /> {formatTimestamp(block.timestamp)}
+                            <span className="flex items-center gap-1 shrink-0">
+                                <Clock className="w-3 h-3 shrink-0" /> {formatTimestamp(block.timestamp)}
                             </span>
                           </div>
                       </div>
                   </div>
 
-                  <div className="text-right flex flex-col items-end">
-                      <div className={`font-bold text-xl ${block.points > 0 ? 'text-green-500' : block.points < 0 ? 'text-red-500' : 'text-gray-400'}`}>
+                  <div className="text-right flex flex-col items-end shrink-0">
+                      <div className={`font-bold text-base sm:text-xl ${block.points > 0 ? 'text-green-500' : block.points < 0 ? 'text-red-500' : 'text-gray-400'}`}>
                           {block.points > 0 ? `+${block.points}` : block.points} Pts
                       </div>
                       <span className={`text-xs mt-1 px-2 py-0.5 rounded ${block.isValid === false ? 'bg-red-500 text-white' : isDark ? 'bg-gray-700 text-gray-300' : 'bg-gray-100 text-gray-600'}`}>
-                          {block.isValid === false ? 'INVALID BLOCK' : 'VALID BLOCK'}
+                          {block.isValid === false ? 'INVALID' : 'VALID'}
                       </span>
                   </div>
               </div>
 
               {/* Hash Details */}
-              <div className={`mt-4 pt-4 border-t ${isDark ? 'border-gray-700' : 'border-gray-100'}`}>
-                  <div className="text-xs mb-1">
+              <div className={`mt-3 pt-3 border-t overflow-hidden ${isDark ? 'border-gray-700' : 'border-gray-100'}`}>
+                  <div className="text-xs mb-1 overflow-hidden">
                       <span className={`font-semibold ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>Hash:</span>
-                      <code className={`block break-all font-mono ${isDark ? "text-indigo-300" : "text-indigo-600"}`}>
+                      <code className={`block break-all font-mono text-[11px] ${isDark ? "text-indigo-300" : "text-indigo-600"}`}>
                           {block.hash}
                       </code>
                   </div>
-                  <div className="text-xs mb-3">
+                  <div className="text-xs mb-3 overflow-hidden">
                       <span className={`font-semibold ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>Previous Hash:</span>
-                      <code className={`block break-all font-mono ${isDark ? "text-gray-400" : "text-gray-500"}`}>
+                      <code className={`block break-all font-mono text-[11px] ${isDark ? "text-gray-400" : "text-gray-500"}`}>
                           {block.prevHash}
                       </code>
                   </div>
