@@ -651,59 +651,55 @@ export default function Rewards() {
     const code = generateRedemptionCode();
 
     try {
-      // Run one Firestore transaction per unit so each write does stock - 1,
-      // which satisfies the Firestore security rule:
-      //   request.resource.data.stock == resource.data.stock - 1
-      let newPoints = userPoints;
-      let newStock = reward.stock;
-      const redemptionIds = [];
+      // Single atomic transaction: deduct total cost + stock in one write,
+      // create one redemption doc with quantity field.
+      const redemptionRef = doc(collection(db, "redemptions"));
 
-      for (let i = 0; i < quantity; i++) {
-        const result = await runTransaction(db, async (transaction) => {
-          const userRef = doc(db, "users", currentUser.uid);
-          const rewardRef = doc(db, "rewards", reward.id);
-          const redemptionRef = doc(collection(db, "redemptions"));
+      const result = await runTransaction(db, async (transaction) => {
+        const userRef = doc(db, "users", currentUser.uid);
+        const rewardRef = doc(db, "rewards", reward.id);
 
-          const userDoc = await transaction.get(userRef);
-          const rewardDoc = await transaction.get(rewardRef);
+        const userDoc = await transaction.get(userRef);
+        const rewardDoc = await transaction.get(rewardRef);
 
-          if (!userDoc.exists()) throw new Error("User data not found.");
-          if (!rewardDoc.exists()) throw new Error("Reward not found.");
+        if (!userDoc.exists()) throw new Error("User data not found.");
+        if (!rewardDoc.exists()) throw new Error("Reward not found.");
 
-          const currentPoints = userDoc.data().totalPoints || 0;
-          const currentStock = rewardDoc.data().stock || 0;
+        const currentPoints = userDoc.data().totalPoints || 0;
+        const currentStock = rewardDoc.data().stock || 0;
 
-          const calculatedNewPoints = currentPoints - reward.cost;
-          const calculatedNewStock = currentStock - 1;
+        const calculatedNewPoints = currentPoints - totalCost;
+        const calculatedNewStock = currentStock - quantity;
 
-          if (calculatedNewPoints < 0) throw new Error("Insufficient points");
-          if (calculatedNewStock < 0) throw new Error("Out of stock");
+        if (calculatedNewPoints < 0) throw new Error("Insufficient points");
+        if (calculatedNewStock < 0) throw new Error("Out of stock");
 
-          transaction.update(userRef, { totalPoints: calculatedNewPoints });
-          transaction.update(rewardRef, { stock: calculatedNewStock });
+        transaction.update(userRef, { totalPoints: calculatedNewPoints });
+        transaction.update(rewardRef, { stock: calculatedNewStock });
 
-          transaction.set(redemptionRef, {
-            userId: currentUser.uid,
-            userEmail: currentUser.email,
-            rewardId: reward.id,
-            rewardName: reward.name,
-            cost: reward.cost,
-            redeemedAt: serverTimestamp(),
-            status: "pending",
-            redemptionCode: code,
-          });
-
-          return {
-            newPoints: calculatedNewPoints,
-            newStock: calculatedNewStock,
-            redemptionId: redemptionRef.id,
-          };
+        transaction.set(redemptionRef, {
+          userId: currentUser.uid,
+          userEmail: currentUser.email,
+          rewardId: reward.id,
+          rewardName: reward.name,
+          cost: reward.cost,
+          quantity,
+          totalCost,
+          redeemedAt: serverTimestamp(),
+          status: "pending",
+          redemptionCode: code,
         });
 
-        newPoints = result.newPoints;
-        newStock = result.newStock;
-        redemptionIds.push(result.redemptionId);
-      }
+        return {
+          newPoints: calculatedNewPoints,
+          newStock: calculatedNewStock,
+          redemptionId: redemptionRef.id,
+        };
+      });
+
+      const newPoints = result.newPoints;
+      const newStock = result.newStock;
+      const redemptionIds = [result.redemptionId];
 
       // Ledger entry — log total cost as a single ledger event
       try {
@@ -732,6 +728,7 @@ export default function Rewards() {
           description: `Redeemed${quantity > 1 ? ` ${quantity}×` : ""}: ${reward.name}`,
           rewardName: reward.name,
           rewardId: reward.id,
+          redemptionIds,          // ← link to redemptions collection docs
           quantity,
           category: reward.category || "reward",
           timestamp: serverTimestamp(),
@@ -807,13 +804,8 @@ export default function Rewards() {
 
               <button
                 onClick={() => navigate("/my-redemptions")}
-                className={`px-4 py-2 rounded-xl font-medium transition text-sm flex items-center justify-center gap-2 ${
-                    isDark 
-                    ? "bg-gray-700 text-gray-200 hover:bg-gray-600" 
-                    : "bg-gray-100 text-gray-700 hover:bg-gray-200"
-                }`}
+                className="px-5 py-2.5 rounded-xl font-semibold text-sm text-white transition-all duration-200 active:scale-95 shadow-md shadow-indigo-500/30 hover:shadow-lg hover:shadow-indigo-500/40 bg-gradient-to-r from-indigo-500 to-purple-600 hover:from-indigo-600 hover:to-purple-700"
               >
-                <Gift className="w-4 h-4" />
                 My Redemptions
               </button>
           </div>

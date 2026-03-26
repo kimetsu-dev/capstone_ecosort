@@ -37,7 +37,8 @@ import {
   Lock,
   Globe,
   Fingerprint,
-  TrendingUp
+  TrendingUp,
+  ShieldAlert,
 } from 'lucide-react';
 import { useTheme } from '../../contexts/ThemeContext';
 
@@ -54,10 +55,11 @@ const BlockchainTab = () => {
   const [copied, setCopied] = useState(false);
   const [verificationDetails, setVerificationDetails] = useState(null); 
   const [externalDataStatus, setExternalDataStatus] = useState(null); 
+  const [txPointsTamperStatus, setTxPointsTamperStatus] = useState(null); // ← NEW
   const [repairResult, setRepairResult] = useState(null);
   const [acknowledgingTamper, setAcknowledgingTamper] = useState(false);
   
-  // NEW: Educational panel states
+  // Educational panel states
   const [showWhyBlockchain, setShowWhyBlockchain] = useState(false);
   const [showTechnicalDetails, setShowTechnicalDetails] = useState(false);
   const [impactMetrics, setImpactMetrics] = useState({
@@ -91,7 +93,7 @@ const BlockchainTab = () => {
       setBlockCount(status.blockCount);
 
       if (status.initialized) {
-        // 2. Run full integrity check (Structural + External Data Reconciliation)
+        // 2. Run full integrity check (Structural + Balance Reconciliation + TX Points Tamper)
         const fullVerification = await runAllIntegrityChecks();
 
         setChainStatus({ 
@@ -100,9 +102,10 @@ const BlockchainTab = () => {
           message: fullVerification.message 
         });
 
-        // Store detailed results
+        // Store detailed results for each check
         setVerificationDetails(fullVerification.chainVerification); 
         setExternalDataStatus(fullVerification.dataVerification);
+        setTxPointsTamperStatus(fullVerification.txPointsVerification); // ← NEW
 
         // 3. Load latest blocks and anchors
         const latestBlocks = await getAllBlocks();
@@ -115,6 +118,7 @@ const BlockchainTab = () => {
       } else {
         setVerificationDetails({ valid: false, message: "Blockchain is not initialized (No Genesis Block)." });
         setExternalDataStatus(null); 
+        setTxPointsTamperStatus(null); // ← NEW
         setBlocks([]);
         setAnchors([]);
       }
@@ -124,19 +128,20 @@ const BlockchainTab = () => {
       setChainStatus(prev => ({ ...prev, valid: false, message: `Error: ${error.message}` }));
       setVerificationDetails({ valid: false, message: `Error during structural verification: ${error.message}` });
       setExternalDataStatus({ valid: false, reason: `Error during external data verification: ${error.message}` });
+      setTxPointsTamperStatus({ valid: false, tampered: [], reason: `Error during transaction points audit: ${error.message}` }); // ← NEW
     } finally {
       setLoading(false);
     }
   };
 
-  // NEW: Calculate impact metrics
+  // Calculate impact metrics
   const calculateImpactMetrics = (blocksData, anchorsData, verification) => {
     const totalPoints = blocksData.reduce((sum, block) => sum + Math.abs(block.points || 0), 0);
     
     setImpactMetrics({
       totalTransactions: blocksData.length,
       totalPointsProtected: totalPoints,
-      integrityChecksPerformed: verification ? 1 : 0, // Increment in real app
+      integrityChecksPerformed: verification ? 1 : 0,
       anchorsPublished: anchorsData.length
     });
   };
@@ -266,7 +271,7 @@ const BlockchainTab = () => {
         </div>
       </div>
 
-      {/* NEW: Why Blockchain Educational Panel */}
+      {/* Why Blockchain Educational Panel */}
       {showWhyBlockchain && (
         <div className={`mb-6 p-6 rounded-xl shadow-lg border ${isDark ? "bg-gray-800 border-gray-700" : "bg-white border-gray-200"}`}>
           <h3 className="text-xl font-bold mb-4 flex items-center gap-2">
@@ -381,7 +386,7 @@ const BlockchainTab = () => {
         </div>
       )}
 
-      {/* NEW: Technical Details Educational Panel */}
+      {/* Technical Details Educational Panel */}
       {showTechnicalDetails && (
         <div className={`mb-6 p-6 rounded-xl shadow-lg border ${isDark ? "bg-gray-800 border-gray-700" : "bg-white border-gray-200"}`}>
           <h3 className="text-xl font-bold mb-4 flex items-center gap-2">
@@ -400,7 +405,7 @@ const BlockchainTab = () => {
                 <li>• Data (transaction details)</li>
                 <li>• Previous Hash (link to previous block)</li>
                 <li>• Current Hash (SHA-256 cryptographic fingerprint)</li>
-                <li>• Metadata (additional context)</li>
+                <li>• Metadata (including sealed <code className="font-mono text-xs">txPoints</code> — original transaction amount)</li>
               </ul>
             </div>
 
@@ -410,6 +415,21 @@ const BlockchainTab = () => {
               <p className="text-sm">
                 Each block's hash depends on its data AND the previous block's hash, creating an unbreakable chain. 
                 If anyone tries to modify a past block, ALL subsequent hashes break, making tampering immediately detectable.
+              </p>
+            </div>
+
+            {/* txPoints seal — NEW explanation */}
+            <div className={`p-4 rounded-lg border-l-4 border-orange-500 ${isDark ? "bg-gray-700" : "bg-orange-50"}`}>
+              <h4 className="font-bold mb-2 flex items-center gap-2">
+                <ShieldAlert className="w-4 h-4 text-orange-500" />
+                Transaction Points Seal
+              </h4>
+              <p className="text-sm">
+                When a block is written, the original transaction points value is sealed into{' '}
+                <code className="font-mono text-xs">metadata.txPoints</code> and folded into the block's SHA-256 hash.
+                Even if the linked <code className="font-mono text-xs">point_transaction</code> document is later edited
+                directly in the database, the sealed value never changes — making the alteration detectable
+                by the Transaction Points Integrity check below.
               </p>
             </div>
 
@@ -457,7 +477,7 @@ const BlockchainTab = () => {
         </div>
       )}
 
-      {/* NEW: Impact Metrics Dashboard */}
+      {/* Impact Metrics Dashboard */}
       {chainStatus.initialized && (
         <div className={`mb-6 p-6 rounded-xl shadow-lg ${isDark ? "bg-gradient-to-r from-indigo-900/50 to-purple-900/50 border border-indigo-700" : "bg-gradient-to-r from-indigo-50 to-purple-50 border border-indigo-200"}`}>
           <h3 className="text-xl font-bold mb-4 flex items-center gap-2">
@@ -565,8 +585,7 @@ const BlockchainTab = () => {
             </button>
         )}
 
-        {/* Repair Chain Button — always visible when initialized so admin
-             can run a repair at any time, not just when the UI detects failure */}
+        {/* Repair Chain Button */}
         {chainStatus.initialized && (
              <button
                 onClick={handleRepairChain}
@@ -659,9 +678,9 @@ const BlockchainTab = () => {
           </div>
         )}
 
-        {/* Overall Status and Actions Row */}
+        {/* Integrity Cards Row */}
         <div className="flex flex-col sm:flex-row gap-4">
-            {/* 1. Overall Blockchain Structural Integrity Card */}
+            {/* 1. Blockchain Structural Integrity Card */}
             {verificationDetails && (
                 <div 
                     className={`flex-1 p-4 rounded-xl shadow-lg transition-colors border ${
@@ -683,7 +702,7 @@ const BlockchainTab = () => {
                             </p>
                             {!verificationDetails.valid && (
                               <div className="mt-3 space-y-2">
-                                {/* Show tampered blocks if any */}
+                                {/* Show invalid blocks if any */}
                                 {verificationDetails.invalidBlocks?.length > 0 && (
                                   <div className={`text-xs p-2 rounded-lg ${isDark ? 'bg-red-900/40 text-red-200' : 'bg-red-100 text-red-800'}`}>
                                     <strong>⚠ Invalid blocks detected:</strong> #{verificationDetails.invalidBlocks.join(', #')}
@@ -770,7 +789,106 @@ const BlockchainTab = () => {
                 </div>
             )}
         </div>
-        
+
+        {/* 3. Transaction Points Integrity Card — NEW */}
+        {txPointsTamperStatus && (
+          <div className={`mt-4 p-4 rounded-xl shadow-lg border ${
+            txPointsTamperStatus.skipped
+              ? isDark ? 'bg-gray-700/50 border-gray-600' : 'bg-gray-50 border-gray-200'
+              : txPointsTamperStatus.valid
+                ? isDark ? 'bg-emerald-900/30 border-emerald-700' : 'bg-emerald-50 border-emerald-200'
+                : isDark ? 'bg-red-900/30 border-red-700' : 'bg-red-50 border-red-200'
+          }`}>
+            <div className="flex items-start gap-4">
+              <div className="mt-0.5 flex-shrink-0">
+                {txPointsTamperStatus.skipped ? (
+                  <Lock className={`w-6 h-6 ${isDark ? 'text-gray-400' : 'text-gray-500'}`} />
+                ) : txPointsTamperStatus.valid ? (
+                  <ShieldAlert className={`w-6 h-6 ${isDark ? 'text-emerald-400' : 'text-emerald-600'}`} />
+                ) : (
+                  <ShieldAlert className="w-6 h-6 text-red-500" />
+                )}
+              </div>
+              <div className="flex-1 min-w-0">
+                <h3 className={`font-bold text-lg mb-1 ${isDark ? 'text-white' : 'text-gray-800'}`}>
+                  Transaction Points Integrity
+                </h3>
+
+                {/* Stats badges */}
+                {!txPointsTamperStatus.skipped && (
+                  <div className="flex flex-wrap gap-2 mb-2">
+                    <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold uppercase border ${isDark ? "bg-blue-900/40 text-blue-300 border-blue-700" : "bg-blue-100 text-blue-700 border-blue-200"}`}>
+                      <ShieldCheck className="w-3 h-3 mr-1"/> Verified: {txPointsTamperStatus.checkedCount ?? 0}
+                    </span>
+                    {(txPointsTamperStatus.skippedLegacy ?? 0) > 0 && (
+                      <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold uppercase border ${isDark ? "bg-yellow-900/40 text-yellow-300 border-yellow-700" : "bg-yellow-100 text-yellow-700 border-yellow-200"}`}>
+                        Legacy: {txPointsTamperStatus.skippedLegacy}
+                      </span>
+                    )}
+                    {(txPointsTamperStatus.tampered?.length ?? 0) > 0 && (
+                      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold uppercase border bg-red-500 text-white border-red-600">
+                        Tampered: {txPointsTamperStatus.tampered.length}
+                      </span>
+                    )}
+                  </div>
+                )}
+
+                <p className={`text-sm ${isDark ? 'text-gray-300' : 'text-gray-600'}`}>
+                  {txPointsTamperStatus.reason}
+                </p>
+
+                {/* Tampered entries detail table */}
+                {txPointsTamperStatus.tampered?.length > 0 && (
+                  <div className="mt-3 space-y-2">
+                    <p className={`text-xs font-bold uppercase tracking-wider ${isDark ? 'text-red-400' : 'text-red-700'}`}>
+                      🚨 Tampered Entries — Review Required
+                    </p>
+                    {txPointsTamperStatus.tampered.map((entry) => (
+                      <div
+                        key={entry.blockId}
+                        className={`p-3 rounded-lg border text-xs ${
+                          isDark ? 'bg-red-900/30 border-red-800' : 'bg-red-50 border-red-200'
+                        }`}
+                      >
+                        <div className="flex justify-between items-start gap-2 mb-1.5">
+                          <span className={`font-bold ${isDark ? 'text-red-300' : 'text-red-800'}`}>
+                            Block #{entry.blockIndex} · {entry.actionType}
+                          </span>
+                          <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider flex-shrink-0 ${
+                            entry.issue === 'TRANSACTION_DELETED'
+                              ? 'bg-orange-500 text-white'
+                              : 'bg-red-500 text-white'
+                          }`}>
+                            {entry.issue === 'TRANSACTION_DELETED' ? 'Deleted' : 'Mismatch'}
+                          </span>
+                        </div>
+                        <p className={`mb-2 ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>
+                          {entry.detail}
+                        </p>
+                        {entry.issue === 'POINTS_MISMATCH' && (
+                          <div className="flex gap-3 mb-2">
+                            <span className={`px-2 py-1 rounded font-mono font-bold text-[11px] ${isDark ? 'bg-green-900/40 text-green-300' : 'bg-green-100 text-green-800'}`}>
+                              Sealed: {entry.sealedPoints} pts
+                            </span>
+                            <span className={`px-2 py-1 rounded font-mono font-bold text-[11px] ${isDark ? 'bg-red-900/40 text-red-300' : 'bg-red-100 text-red-800'}`}>
+                              Live: {entry.livePoints} pts
+                            </span>
+                          </div>
+                        )}
+                        <div className={`flex flex-wrap gap-x-4 gap-y-0.5 font-mono text-[10px] ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
+                          <span>TX: {entry.firestoreId}</span>
+                          <span>User: {entry.userId}</span>
+                          <span>{entry.timestamp ? new Date(entry.timestamp).toLocaleString() : 'N/A'}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Global Integrity Message */}
         {chainStatus.valid !== null && (
             <div className={`mt-4 p-4 rounded-xl border-l-4 ${
@@ -822,7 +940,7 @@ const BlockchainTab = () => {
         )}
       </div>
 
-      {/* Info Box - Enhanced with "Why Emerging Technology" */}
+      {/* Info Box */}
       <div className={`mt-8 p-6 rounded-xl border-l-4 ${
         isDark ? "bg-blue-900/20 border-blue-500 text-blue-300" : "bg-blue-50 border-blue-500 text-blue-800"
       }`}>

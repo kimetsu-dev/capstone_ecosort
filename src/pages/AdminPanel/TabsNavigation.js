@@ -98,6 +98,14 @@ export default function TabsNavigation({
       icon: "⛓️",
       count: null,
     },
+    {
+      id: "support",
+      label: "Support",
+      shortLabel: "Support",
+      mobileLabel: "Support",
+      icon: "🛠️",
+      count: null,
+    },
   ];
 
   // Check scroll position and update scroll state

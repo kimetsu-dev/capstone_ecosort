@@ -51,6 +51,7 @@ import SubmissionsTab from "./AdminPanel/SubmissionsTab";
 import LedgerTab from "./AdminPanel/LedgerTab";
 import BlockchainTab from './AdminPanel/BlockchainTab'; 
 import AnalyticsTab from "./AdminPanel/AnalyticsTab"; 
+import SupportTab from "./AdminPanel/SupportTab";
 
 import { formatTimestamp, getStatusBadge } from "../utils/helpers";
 import { useTheme } from "../contexts/ThemeContext";
@@ -348,13 +349,14 @@ export default function AdminPanel() {
     { id: "users", label: "Users", icon: <FiUsers /> },
     { id: "submissions", label: "Submissions", icon: <FiFileText />, badge: pendingSubmissions.length },
     { id: "rewards", label: "Rewards", icon: <FiGift /> },
-    { id: "redemptions", label: "Redemptions", icon: <FiCreditCard /> },
+    { id: "redemptions", label: "Redemptions", icon: <FiCreditCard />, badge: redemptions.filter((r) => r.status === "pending").length },
     { id: "transactions", label: "Transactions", icon: <FiActivity /> },
     { id: "wasteTypes", label: "Waste Types", icon: <FiTag /> },
     { id: "schedules", label: "Schedules", icon: <FiCalendar /> },
     { id: "forum", label: "Forum", icon: <FiAlertTriangle />, badge: reportsPendingCount },
-    { id: "ledger", label: "Blockchain Ledger", icon: <FiLink /> },
-    { id: "blockchain", label: "Blockchain Verify", icon: <FiLink /> },
+    { id: "ledger", label: "Immutable Ledger", icon: <FiLink /> },
+    { id: "blockchain", label: "Chain Integrity", icon: <FiLink /> },
+    { id: "support", label: "Support", icon: <FiAlertTriangle /> },
   ];
 
   if (loadingAuth) {
@@ -463,6 +465,10 @@ export default function AdminPanel() {
                 {
                   group: "Security & Verification",
                   items: menuItems.filter(m => ["ledger", "blockchain"].includes(m.id))
+                },
+                {
+                  group: "Help & Support",
+                  items: menuItems.filter(m => ["support"].includes(m.id))
                 }
               ].map(({ group, items }) => (
                 <div key={group}>
@@ -822,6 +828,7 @@ export default function AdminPanel() {
             )}
             {activeTab === "ledger" && <LedgerTab />}
             {activeTab === "blockchain" && <BlockchainTab />}
+            {activeTab === "support" && <SupportTab />}
           </main>
         </div>
       </div>

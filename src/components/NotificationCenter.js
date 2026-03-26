@@ -12,7 +12,10 @@ import {
   FiClock,
   FiCheckCircle,
   FiChevronLeft,
+  FiCalendar,
+  FiMessageSquare,
 } from "react-icons/fi";
+import { Truck, Recycle } from "lucide-react";
 
 import { 
   collection, 
@@ -277,6 +280,36 @@ export default function NotificationCenter({ userId = "demo-user" }) {
     }
 
     switch (type) {
+      case "collection_today":
+        return (
+          <div className="w-8 h-8 rounded-lg bg-orange-100 dark:bg-orange-900/30 flex items-center justify-center flex-shrink-0">
+            <Truck className="w-4 h-4 text-orange-600 dark:text-orange-400" />
+          </div>
+        );
+      case "collection_reminder":
+        return (
+          <div className="w-8 h-8 rounded-lg bg-amber-100 dark:bg-amber-900/30 flex items-center justify-center flex-shrink-0">
+            <Truck className="w-4 h-4 text-amber-600 dark:text-amber-400" />
+          </div>
+        );
+      case "submission_today":
+        return (
+          <div className="w-8 h-8 rounded-lg bg-green-100 dark:bg-green-900/30 flex items-center justify-center flex-shrink-0">
+            <Recycle className="w-4 h-4 text-green-600 dark:text-green-400" />
+          </div>
+        );
+      case "submission_reminder":
+        return (
+          <div className="w-8 h-8 rounded-lg bg-emerald-100 dark:bg-emerald-900/30 flex items-center justify-center flex-shrink-0">
+            <FiCalendar className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+          </div>
+        );
+      case "support_response":
+        return (
+          <div className="w-8 h-8 rounded-lg bg-blue-100 dark:bg-blue-900/30 flex items-center justify-center flex-shrink-0">
+            <FiMessageSquare className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+          </div>
+        );
       case "transaction":
         return <FiDollarSign className={`${iconClass} text-blue-500`} />;
       case "redemption":
@@ -307,7 +340,7 @@ export default function NotificationCenter({ userId = "demo-user" }) {
     const data = notif.data || {};
 
     return (
-      <div className="flex flex-col h-full max-h-full">
+      <div className="flex flex-col min-h-0 h-full">
         {screenSize === "mobile" && (
           <div className="flex-shrink-0 bg-white dark:bg-gray-900 z-10 p-4 border-b border-gray-200 dark:border-gray-700">
             <button
@@ -372,6 +405,55 @@ export default function NotificationCenter({ userId = "demo-user" }) {
               </div>
             )}
 
+            {/* Support ticket response detail */}
+            {notif.type === "support_response" && (
+              <div className="space-y-3 mb-4">
+                {/* Ticket meta */}
+                {(notif.ticketSubject || notif.ticketCategory) && (
+                  <div className="bg-gray-50 dark:bg-gray-800/60 border border-gray-200 dark:border-gray-700 rounded-xl p-4">
+                    <h4 className="text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">
+                      Your Ticket
+                    </h4>
+                    {notif.ticketSubject && (
+                      <p className="text-sm font-semibold text-gray-900 dark:text-white mb-1">
+                        {notif.ticketSubject}
+                      </p>
+                    )}
+                    {notif.ticketCategory && (
+                      <p className="text-xs text-gray-500 dark:text-gray-400 capitalize">
+                        Category: {notif.ticketCategory.replace(/_/g, " ")}
+                      </p>
+                    )}
+                    {notif.ticketStatus && (
+                      <span className={`inline-flex mt-2 px-2 py-0.5 text-xs font-medium rounded-md border ${
+                        notif.ticketStatus === "resolved"
+                          ? "text-green-700 bg-green-50 border-green-200 dark:text-green-400 dark:bg-green-900/30 dark:border-green-700"
+                          : notif.ticketStatus === "in_progress"
+                          ? "text-blue-700 bg-blue-50 border-blue-200 dark:text-blue-400 dark:bg-blue-900/30 dark:border-blue-700"
+                          : notif.ticketStatus === "closed"
+                          ? "text-gray-700 bg-gray-50 border-gray-200 dark:text-gray-400 dark:bg-gray-800 dark:border-gray-600"
+                          : "text-yellow-700 bg-yellow-50 border-yellow-200 dark:text-yellow-400 dark:bg-yellow-900/30 dark:border-yellow-700"
+                      }`}>
+                        {notif.ticketStatus.replace(/_/g, " ")}
+                      </span>
+                    )}
+                  </div>
+                )}
+                {/* Admin response */}
+                {notif.adminResponse && (
+                  <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-xl p-4">
+                    <h4 className="font-semibold text-blue-900 dark:text-blue-300 mb-2 flex items-center gap-2">
+                      <FiMessageSquare className="w-4 h-4" />
+                      Support Response
+                    </h4>
+                    <p className="text-blue-800 dark:text-blue-200 text-sm leading-relaxed whitespace-pre-wrap">
+                      {notif.adminResponse}
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
+
             <div className="border-t border-gray-200 dark:border-gray-700 pt-4 mt-6">
               <time className="text-sm text-gray-500 dark:text-gray-400 flex items-start gap-2">
                 <FiClock className="w-4 h-4 flex-shrink-0 mt-0.5" />
@@ -415,7 +497,7 @@ export default function NotificationCenter({ userId = "demo-user" }) {
             : screenSize === "tablet"
             ? "fixed top-16 left-4 right-4 bottom-20 z-[9999] flex flex-col"
             // For desktop, position it fixed relative to the viewport instead of absolute
-            : "fixed top-[72px] right-4 lg:right-8 w-screen max-w-lg lg:max-w-xl max-h-[80vh] flex flex-col z-[9999]"
+            : "fixed top-[72px] right-4 lg:right-8 w-screen max-w-lg lg:max-w-xl max-h-[80vh] flex flex-col min-h-0 z-[9999]"
         }`}
         role="region"
         aria-label="Notifications panel"
@@ -471,13 +553,13 @@ export default function NotificationCenter({ userId = "demo-user" }) {
         </div>
 
         {/* Content */}
-        <div className="flex-1 overflow-hidden flex h-full"> 
+        <div className="flex-1 overflow-hidden flex min-h-0">
           {/* Notifications List */}
           <div
             className={`overflow-y-auto ${
               screenSize === "desktop" && selectedNotif
-                ? "w-1/2 border-r border-gray-200 dark:border-gray-700 h-full" 
-                : "flex-1 w-full"
+                ? "w-1/2 border-r border-gray-200 dark:border-gray-700 min-h-0" 
+                : "flex-1 w-full min-h-0"
             }`}
           >
             {notifications.length === 0 ? (
@@ -561,6 +643,16 @@ export default function NotificationCenter({ userId = "demo-user" }) {
                             </span>
                           </div>
                         )}
+
+                        {/* Inline support response preview */}
+                        {notif.type === "support_response" && notif.adminResponse && (
+                          <div className="mt-2 flex items-start gap-1.5">
+                            <FiMessageSquare className="w-3 h-3 text-blue-500 flex-shrink-0 mt-0.5" />
+                            <span className="text-xs text-blue-600 dark:text-blue-400 leading-snug line-clamp-2">
+                              <span className="font-semibold">Reply:</span> {notif.adminResponse}
+                            </span>
+                          </div>
+                        )}
                       </div>
 
                       <div className="flex items-center space-x-1 flex-shrink-0">
@@ -588,7 +680,7 @@ export default function NotificationCenter({ userId = "demo-user" }) {
 
           {/* Desktop Details Panel */}
           {screenSize === "desktop" && selectedNotif && (
-            <div className="w-1/2 bg-gradient-to-br from-gray-50 to-white dark:from-gray-800/50 dark:to-gray-900/50 overflow-y-auto h-full">
+            <div className="w-1/2 bg-gradient-to-br from-gray-50 to-white dark:from-gray-800/50 dark:to-gray-900/50 overflow-y-auto min-h-0">
               {renderNotificationDetails(selectedNotif)}
             </div>
           )}

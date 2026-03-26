@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Award, X } from "lucide-react";
+import { Award, X, Lock } from "lucide-react"; // Imported Lock icon
 import { useReward } from "react-rewards";
 import imageCompression from "browser-image-compression";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
@@ -29,7 +29,6 @@ export default function RewardModal({
   const [categories, setCategories] = useState([]);
   const [newCategory, setNewCategory] = useState("");
 
-  // Fetch distinct categories from rewards collection
   useEffect(() => {
     const fetchCategories = async () => {
       try {
@@ -49,7 +48,6 @@ export default function RewardModal({
     fetchCategories();
   }, [rewardModal.visible]);
 
-  // Upload handler - compress + upload to Firebase Storage
   const handleImageUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -86,7 +84,6 @@ export default function RewardModal({
     }
   };
 
-  // Save reward (create or update)
   const saveReward = async () => {
     if (!rewardForm.name.trim() || !rewardForm.description.trim()) {
       showToast("Please fill all required fields", "error");
@@ -97,28 +94,29 @@ export default function RewardModal({
     setLoading(true);
 
     try {
-      // Use newCategory if provided, else use selected category
       const finalCategory = newCategory.trim()
         ? newCategory.trim()
         : rewardForm.category.trim() || "Uncategorized";
 
+      // IMPORTANT: Exclude stock if it is an edit to satisfy security rules
       const rewardData = {
         name: rewardForm.name.trim(),
         description: rewardForm.description.trim(),
         cost: parseInt(rewardForm.cost, 10) || 0,
-        stock: parseInt(rewardForm.stock, 10) || 0,
         category: finalCategory,
         imageUrl: rewardForm.imageUrl || null,
-        popularity: Math.floor(Math.random() * 40) + 60,
-        createdAt:
-          rewardModal.isEdit && rewardModal.reward?.createdAt
-            ? rewardModal.reward.createdAt
-            : { seconds: Math.floor(Date.now() / 1000) },
+        popularity: rewardModal.isEdit ? rewardModal.reward.popularity : (Math.floor(Math.random() * 40) + 60),
       };
+
+      // Only add stock if we are creating a NEW reward
+      if (!rewardModal.isEdit) {
+        rewardData.stock = parseInt(rewardForm.stock, 10) || 0;
+        rewardData.createdAt = { seconds: Math.floor(Date.now() / 1000) };
+      }
 
       if (rewardModal.isEdit && rewardModal.reward) {
         await updateDoc(doc(db, "rewards", rewardModal.reward.id), rewardData);
-        showToast("Reward updated successfully", "success");
+        showToast("Reward details updated successfully", "success");
       } else {
         await addDoc(collection(db, "rewards"), rewardData);
         showToast("Reward created successfully", "success");
@@ -133,7 +131,6 @@ export default function RewardModal({
     }
   };
 
-  // Close modal and reset form
   const closeModalAndResetForm = () => {
     setRewardModal({ visible: false, reward: null, isEdit: false });
     setRewardForm({
@@ -150,249 +147,90 @@ export default function RewardModal({
   };
 
   return (
-    <div
-      className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4"
-      aria-modal="true"
-      role="dialog"
-      aria-labelledby="reward-modal-title"
-    >
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto focus:outline-none">
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
         <header className="p-6 border-b border-slate-200 flex justify-between items-center">
-          <h3
-            id="reward-modal-title"
-            className="text-2xl font-bold text-slate-800 flex items-center gap-3"
-          >
+          <h3 className="text-2xl font-bold text-slate-800 flex items-center gap-3">
             <Award className="text-purple-600" size={28} />
-            {rewardModal.isEdit ? "Edit Reward" : "Create New Reward"}
+            {rewardModal.isEdit ? "Edit Reward Details" : "Create New Reward"}
           </h3>
-          <button
-            onClick={closeModalAndResetForm}
-            aria-label="Close modal"
-            className="text-slate-500 hover:text-slate-700 focus:outline-none"
-            type="button"
-            disabled={loading}
-          >
+          <button onClick={closeModalAndResetForm} className="text-slate-500 hover:text-slate-700">
             <X size={24} />
           </button>
         </header>
 
-        <form
-          className="p-6 space-y-6"
-          onSubmit={(e) => {
-            e.preventDefault();
-            saveReward();
-          }}
-          noValidate
-        >
-          {/* Image Upload */}
+        <form onSubmit={(e) => { e.preventDefault(); saveReward(); }} className="p-6 space-y-6">
+          {/* Image Upload Block (Unchanged) */}
           <div>
-            <label
-              htmlFor="reward-image-upload"
-              className="block text-sm font-semibold text-slate-700 mb-2"
-            >
-              Reward Image (optional)
-            </label>
+            <label className="block text-sm font-semibold text-slate-700 mb-2">Reward Image</label>
             <div className="flex items-center space-x-4">
-              <input
-                id="reward-image-upload"
-                type="file"
-                accept="image/*"
-                disabled={loading}
-                onChange={handleImageUpload}
-                className="w-full px-4 py-3 border border-slate-300 rounded-xl cursor-pointer transition-all duration-200 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-purple-50 file:text-purple-700 hover:file:bg-purple-100"
-                aria-describedby="reward-image-help"
-              />
+              <input type="file" accept="image/*" disabled={loading} onChange={handleImageUpload} className="w-full px-4 py-3 border border-slate-300 rounded-xl" />
               {rewardForm.imagePreview || rewardForm.imageUrl ? (
                 <div className="w-20 h-20 rounded-xl overflow-hidden border-2 border-slate-200 flex-shrink-0">
-                  <img
-                    src={
-                      rewardForm.imagePreview
-                        ? rewardForm.imagePreview
-                        : rewardForm.imageUrl
-                    }
-                    alt="Reward Preview"
-                    className="w-full h-full object-cover"
-                  />
+                  <img src={rewardForm.imagePreview || rewardForm.imageUrl} alt="Preview" className="w-full h-full object-cover" />
                 </div>
               ) : (
-                <div
-                  ref={reward}
-                  className="w-20 h-20 rounded-xl flex items-center justify-center bg-slate-100 text-slate-400 text-4xl select-none"
-                >
+                <div ref={reward} className="w-20 h-20 rounded-xl flex items-center justify-center bg-slate-100 text-slate-400 text-4xl">
                   <Award />
                 </div>
               )}
             </div>
-            <p id="reward-image-help" className="text-xs text-slate-400 mt-1">
-              You can skip uploading an image. A default icon will be used.
-            </p>
           </div>
 
-          {/* Name */}
           <div>
-            <label
-              htmlFor="reward-name"
-              className="block text-sm font-semibold text-slate-700 mb-2"
-            >
-              Reward Name *
-            </label>
-            <input
-              id="reward-name"
-              type="text"
-              value={rewardForm.name}
-              onChange={(e) =>
-                setRewardForm((prev) => ({ ...prev, name: e.target.value }))
-              }
-              disabled={loading}
-              required
-              className="w-full px-4 py-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-purple-500"
-              placeholder="Enter reward name"
-            />
+            <label className="block text-sm font-semibold text-slate-700 mb-2">Reward Name *</label>
+            <input type="text" value={rewardForm.name} onChange={(e) => setRewardForm((prev) => ({ ...prev, name: e.target.value }))} disabled={loading} required className="w-full px-4 py-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-purple-500" />
           </div>
 
-          {/* Description */}
           <div>
-            <label
-              htmlFor="reward-description"
-              className="block text-sm font-semibold text-slate-700 mb-2"
-            >
-              Description *
-            </label>
-            <textarea
-              id="reward-description"
-              value={rewardForm.description}
-              onChange={(e) =>
-                setRewardForm((prev) => ({
-                  ...prev,
-                  description: e.target.value,
-                }))
-              }
-              disabled={loading}
-              required
-              rows={3}
-              className="w-full px-4 py-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-purple-500"
-              placeholder="Enter reward description"
-            />
+            <label className="block text-sm font-semibold text-slate-700 mb-2">Description *</label>
+            <textarea value={rewardForm.description} onChange={(e) => setRewardForm((prev) => ({ ...prev, description: e.target.value }))} disabled={loading} required rows={3} className="w-full px-4 py-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-purple-500" />
           </div>
 
-          {/* Cost */}
-          <div>
-            <label
-              htmlFor="reward-cost"
-              className="block text-sm font-semibold text-slate-700 mb-2"
-            >
-              Cost (points) *
-            </label>
-            <input
-              id="reward-cost"
-              type="number"
-              min="0"
-              value={rewardForm.cost}
-              onChange={(e) =>
-                setRewardForm((prev) => ({ ...prev, cost: e.target.value }))
-              }
-              disabled={loading}
-              required
-              className="w-full px-4 py-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-purple-500"
-              placeholder="Enter cost in points"
-            />
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-semibold text-slate-700 mb-2">Cost (points) *</label>
+              <input type="number" min="0" value={rewardForm.cost} onChange={(e) => setRewardForm((prev) => ({ ...prev, cost: e.target.value }))} disabled={loading} required className="w-full px-4 py-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-purple-500" />
+            </div>
+
+            {/* NEW: Stock Input Locked Logic */}
+            <div>
+              <label className="block text-sm font-semibold text-slate-700 mb-2 flex items-center justify-between">
+                <span>Stock *</span>
+                {rewardModal.isEdit && <span className="text-xs text-amber-600 flex items-center gap-1"><Lock size={12}/> Locked</span>}
+              </label>
+              <input 
+                type="number" 
+                min="0" 
+                value={rewardForm.stock} 
+                onChange={(e) => setRewardForm((prev) => ({ ...prev, stock: e.target.value }))} 
+                disabled={loading || rewardModal.isEdit} 
+                required={!rewardModal.isEdit} 
+                className={`w-full px-4 py-3 border rounded-xl focus:ring-2 focus:ring-purple-500 ${rewardModal.isEdit ? 'bg-slate-100 border-slate-200 text-slate-500 cursor-not-allowed' : 'border-slate-300'}`} 
+              />
+              {rewardModal.isEdit && (
+                <p className="text-xs text-slate-500 mt-1">To adjust stock, please use the dedicated "Adjust Inventory" button on the main dashboard.</p>
+              )}
+            </div>
           </div>
 
-          {/* Stock */}
           <div>
-            <label
-              htmlFor="reward-stock"
-              className="block text-sm font-semibold text-slate-700 mb-2"
-            >
-              Stock *
-            </label>
-            <input
-              id="reward-stock"
-              type="number"
-              min="0"
-              value={rewardForm.stock}
-              onChange={(e) =>
-                setRewardForm((prev) => ({ ...prev, stock: e.target.value }))
-              }
-              disabled={loading}
-              required
-              className="w-full px-4 py-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-purple-500"
-              placeholder="Enter available stock"
-            />
-          </div>
-
-          {/* Category */}
-          <div>
-            <label
-              htmlFor="reward-category"
-              className="block text-sm font-semibold text-slate-700 mb-2"
-            >
-              Category
-            </label>
-            <select
-              id="reward-category"
-              value={rewardForm.category}
-              onChange={(e) =>
-                setRewardForm((prev) => ({
-                  ...prev,
-                  category: e.target.value,
-                }))
-              }
-              disabled={loading}
-              className="w-full px-4 py-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-purple-500"
-            >
+            <label className="block text-sm font-semibold text-slate-700 mb-2">Category</label>
+            <select value={rewardForm.category} onChange={(e) => setRewardForm((prev) => ({ ...prev, category: e.target.value }))} disabled={loading} className="w-full px-4 py-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-purple-500">
               <option value="">Select category</option>
-              {categories.map((cat, idx) => (
-                <option key={idx} value={cat}>
-                  {cat}
-                </option>
-              ))}
+              {categories.map((cat, idx) => (<option key={idx} value={cat}>{cat}</option>))}
               <option value="__new">+ Add new category</option>
             </select>
-
             {rewardForm.category === "__new" && (
-              <input
-                type="text"
-                placeholder="Enter new category"
-                value={newCategory}
-                onChange={(e) => setNewCategory(e.target.value)}
-                disabled={loading}
-                className="mt-2 w-full px-4 py-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-purple-500"
-              />
+              <input type="text" placeholder="Enter new category" value={newCategory} onChange={(e) => setNewCategory(e.target.value)} disabled={loading} className="mt-2 w-full px-4 py-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-purple-500" />
             )}
           </div>
 
-          {/* Buttons */}
           <div className="flex space-x-3">
-            <button
-              type="submit"
-              disabled={loading}
-              className={`flex-1 bg-gradient-to-r from-purple-600 to-indigo-600 text-white py-4 px-6 rounded-xl hover:from-purple-700 hover:to-indigo-700 transition-all duration-200 font-medium flex items-center justify-center gap-2 ${
-                loading ? "opacity-70 cursor-not-allowed" : ""
-              }`}
-              aria-busy={loading}
-            >
-              {loading ? (
-                <span
-                  className="inline-block h-5 w-5 border-2 border-white border-t-transparent rounded-full animate-spin"
-                  role="status"
-                  aria-label="Loading"
-                />
-              ) : (
-                <>
-                  <Award size={20} />
-                  {rewardModal.isEdit ? "Update" : "Create"} Reward
-                </>
-              )}
+            <button type="submit" disabled={loading} className="flex-1 bg-gradient-to-r from-purple-600 to-indigo-600 text-white py-4 px-6 rounded-xl hover:from-purple-700 hover:to-indigo-700 transition-all duration-200 font-medium flex items-center justify-center gap-2">
+              {loading ? <span className="inline-block h-5 w-5 border-2 border-white border-t-transparent rounded-full animate-spin" /> : <><Award size={20} /> {rewardModal.isEdit ? "Update Details" : "Create Reward"}</>}
             </button>
-            <button
-              type="button"
-              onClick={closeModalAndResetForm}
-              disabled={loading}
-              className={`flex-1 bg-slate-200 text-slate-700 py-4 px-6 rounded-xl hover:bg-slate-300 transition-all duration-200 font-medium ${
-                loading ? "opacity-70 cursor-not-allowed" : ""
-              }`}
-            >
+            <button type="button" onClick={closeModalAndResetForm} disabled={loading} className="flex-1 bg-slate-200 text-slate-700 py-4 px-6 rounded-xl hover:bg-slate-300">
               Cancel
             </button>
           </div>

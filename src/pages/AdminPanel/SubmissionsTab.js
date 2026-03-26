@@ -259,7 +259,7 @@ const SubmissionsTab = ({
   // State to track expanded items in the history view
   const [expandedBundles, setExpandedBundles] = useState({});
   // State for reject-with-reason modal
-  const [rejectModal, setRejectModal] = useState({ open: false, submissionId: null, userId: null });
+  const [rejectModal, setRejectModal] = useState({ open: false, submissionId: null, userId: null, submissionType: null });
 
   const toggleBundle = (id) => {
     setExpandedBundles(prev => ({ ...prev, [id]: !prev[id] }));
@@ -273,9 +273,21 @@ const SubmissionsTab = ({
     return () => unsub();
   }, []);
 
-  // 2. Real-time stats listener — waits for auth, depends on currentUserId
+  // 2. Real-time submissions listener with permission-denied retry.
+  //
+  //    WHY THE RETRY?
+  //    Firestore security rules use isAdmin() which calls get(users/{uid}).
+  //    Immediately after login the token is fresh but the rules-engine
+  //    get() can race and return permission-denied on the very first
+  //    snapshot subscription.  We catch that specific error, wait 2 s for
+  //    the token to fully propagate, then resubscribe automatically.
+  //    Subsequent attempts always succeed because the token is stable.
   useEffect(() => {
-    if (!currentUserId) return; // Wait for Firebase to confirm the user
+    if (!currentUserId) return;
+
+    let unsubscribe = null;
+    let retryTimer  = null;
+    let cancelled   = false;
 
     const toMs = (ts) => {
       if (!ts) return 0;
@@ -284,38 +296,57 @@ const SubmissionsTab = ({
       return 0;
     };
 
-    const unsubscribe = onSnapshot(
-      collection(db, "waste_submissions"),
-      (snapshot) => {
-        const submissions = snapshot.docs
-          .map((d) => ({ id: d.id, ...d.data() }))
-          .sort((a, b) => toMs(b.submittedAt) - toMs(a.submittedAt));
+    const subscribe = () => {
+      unsubscribe = onSnapshot(
+        collection(db, "waste_submissions"),
+        (snapshot) => {
+          if (cancelled) return;
+          const submissions = snapshot.docs
+            .map((d) => ({ id: d.id, ...d.data() }))
+            .sort((a, b) => toMs(b.submittedAt) - toMs(a.submittedAt));
 
-        const total      = submissions.length;
-        const successful = submissions.filter(s => s.status === "confirmed").length;
-        const rejected   = submissions.filter(s => s.status === "rejected").length;
-        const pending    = submissions.filter(s => s.status === "pending").length;
-        const cancelled  = submissions.filter(s => s.status === "cancelled").length;
-        const successRate = (successful + rejected) > 0
-          ? (successful / (successful + rejected)) * 100
-          : 0;
-        const totalPointsAwarded = submissions
-          .filter(s => s.status === "confirmed")
-          .reduce((sum, s) => sum + (parseFloat(s.points) || 0), 0);
+          const total       = submissions.length;
+          const successful  = submissions.filter(s => s.status === "confirmed").length;
+          const rejected    = submissions.filter(s => s.status === "rejected").length;
+          const pending     = submissions.filter(s => s.status === "pending").length;
+          const cancelled_  = submissions.filter(s => s.status === "cancelled").length;
+          const successRate = (successful + rejected) > 0
+            ? (successful / (successful + rejected)) * 100
+            : 0;
+          const totalPointsAwarded = submissions
+            .filter(s => s.status === "confirmed")
+            .reduce((sum, s) => sum + (parseFloat(s.points) || 0), 0);
 
-        setLiveStats({ total, successful, rejected, pending, cancelled,
-          successRate: isNaN(successRate) ? 0 : successRate,
-          totalPointsAwarded });
-        setAllSubmissions(submissions);
-        setIsStatsLoading(false);
-      },
-      (error) => {
-        console.error("Submissions listener error:", error);
-        setIsStatsLoading(false);
-      }
-    );
+          setLiveStats({
+            total, successful, rejected, pending, cancelled: cancelled_,
+            successRate: isNaN(successRate) ? 0 : successRate,
+            totalPointsAwarded,
+          });
+          setAllSubmissions(submissions);
+          setIsStatsLoading(false);
+        },
+        (error) => {
+          if (cancelled) return;
+          if (error.code === "permission-denied") {
+            // Token not yet propagated through rules — retry after 2 s
+            console.warn("Submissions: permission-denied, retrying in 2 s…");
+            if (unsubscribe) { unsubscribe(); unsubscribe = null; }
+            retryTimer = setTimeout(() => { if (!cancelled) subscribe(); }, 2000);
+          } else {
+            console.error("Submissions listener error:", error);
+            setIsStatsLoading(false);
+          }
+        }
+      );
+    };
 
-    return () => unsubscribe();
+    subscribe();
+
+    return () => {
+      cancelled = true;
+      if (retryTimer) clearTimeout(retryTimer);
+      if (unsubscribe) unsubscribe();
+    };
   }, [currentUserId]);
 
   const getUserInfo = (userId) => {
@@ -329,7 +360,7 @@ const SubmissionsTab = ({
     return { name, email, uniqueId };
   };
 
-  const rejectSubmission = async (submissionId, userId, reason) => {
+  const rejectSubmission = async (submissionId, userId, reason, submissionType = "waste") => {
     setLoading(true);
     try {
       const submissionRef = doc(db, "waste_submissions", submissionId);
@@ -353,6 +384,18 @@ const SubmissionsTab = ({
           ...(reason ? { reason } : {}),
         }
       );
+
+      // 📋 Record the rejection as a visible transaction entry (0 pts, for history clarity)
+      await addDoc(collection(db, "point_transactions"), {
+        userId,
+        type: "submission_rejected",
+        points: 0,
+        description: `Submission Rejected – ${submissionType.charAt(0).toUpperCase() + submissionType.slice(1)} waste`,
+        submissionId,
+        category: "recycling",
+        timestamp: serverTimestamp(),
+        ...(reason ? { rejectionReason: reason } : {}),
+      });
 
       // ⛓️ Record the admin rejection on the immutable ledger
       await addToLedger(
@@ -423,7 +466,11 @@ const SubmissionsTab = ({
         {
           submissionId: submission.id,
           type: isMixedBundle ? "mixed_bundle" : submission.type,
-          weight: submission.weight ?? null,
+          // Mixed bundles store weight as totalWeight, not weight.
+          // Using submission.weight for a bundle yields undefined -> null (wrong data).
+          weight: isMixedBundle
+            ? (submission.totalWeight ?? submission.items?.reduce((s, i) => s + (i.weight || 0), 0) ?? null)
+            : (submission.weight ?? null),
         }
       );
 
@@ -953,7 +1000,7 @@ const SubmissionsTab = ({
                             <span className="text-center">Confirm & Award {estimatedPoints.toFixed(1)} pts</span>
                           </button>
                           <button
-                            onClick={() => setRejectModal({ open: true, submissionId: submission.id, userId: submission.userId })}
+                            onClick={() => setRejectModal({ open: true, submissionId: submission.id, userId: submission.userId, submissionType: submission.type || "waste" })}
                             className="flex-1 px-4 py-2.5 text-white bg-gradient-to-r from-red-600 to-red-700 rounded-lg hover:from-red-700 hover:to-red-800 text-sm font-medium transition-all duration-200 flex items-center justify-center space-x-2 shadow-lg hover:shadow-xl transform hover:scale-[1.02]"
                             disabled={loading}
                           >
@@ -987,11 +1034,11 @@ const SubmissionsTab = ({
       {/* ── Reject-with-Reason Modal ────────────────────────────────────────── */}
       <RejectSubmissionModal
         isOpen={rejectModal.open}
-        onClose={() => setRejectModal({ open: false, submissionId: null, userId: null })}
+        onClose={() => setRejectModal({ open: false, submissionId: null, userId: null, submissionType: null })}
         onConfirm={(reason) => {
-          const { submissionId, userId } = rejectModal;
-          setRejectModal({ open: false, submissionId: null, userId: null });
-          if (submissionId) rejectSubmission(submissionId, userId, reason);
+          const { submissionId, userId, submissionType } = rejectModal;
+          setRejectModal({ open: false, submissionId: null, userId: null, submissionType: null });
+          if (submissionId) rejectSubmission(submissionId, userId, reason, submissionType);
         }}
         isDark={isDark}
       />

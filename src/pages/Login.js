@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { auth, db } from "../firebase";
-import { signInWithEmailAndPassword } from "firebase/auth";
+import { signInWithEmailAndPassword, signOut } from "firebase/auth";
 import { doc, getDoc, setDoc } from "firebase/firestore";
 import { useNavigate } from "react-router-dom";
 import { signInWithGoogle } from "../utils/googleLogin";
@@ -22,13 +22,12 @@ export default function Login() {
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const navigate = useNavigate();
 
-  // Redirect if already logged in
-  useEffect(() => {
-    if (!loading && currentUser) {
-      // Don't show anything, just redirect - this is handled by AuthRedirect in App.js
-      return;
-    }
-  }, [currentUser, loading]);
+  /* useEffect(() => {
+  if (!loading && currentUser && currentUser.emailVerified) {
+    navigate("/dashboard", { replace: true });
+  }
+}, [currentUser, loading, navigate]); 
+*/
 
   useEffect(() => {
     const signupEmail = localStorage.getItem('signupEmail');
@@ -77,19 +76,39 @@ export default function Login() {
     }
 
     try {
-      const userCred = await signInWithEmailAndPassword(auth, values.email, values.password);
-      const userId = userCred.user.uid;
+      const normalizedEmail = values.email.trim().toLowerCase();
+      const userCred = await signInWithEmailAndPassword(auth, normalizedEmail, values.password);
+      const user = userCred.user;
 
-      const userRef = doc(db, "users", userId);
+      // Force reload to get the latest email verified status
+      await user.reload(); 
+
+      // Force token refresh so Firestore Rules instantly recognize the user as verified
+      await user.getIdToken(true);
+
+      const userRef = doc(db, "users", user.uid);
       const userSnap = await getDoc(userRef);
 
+      // Block unverified users ONLY if they are brand-new (no Firestore doc yet).
+      // Pre-existing users created before email verification was enforced are
+      // allowed through — their Firestore document is their proof of legitimacy.
+      if (!user.emailVerified && !userSnap.exists()) {
+        await signOut(auth);
+        setIsLoggingIn(false);
+        setIsValidating(false);
+        setToast({ message: 'Please verify your email address before logging in. Check your inbox.', type: 'error', visible: true });
+        setTimeout(() => setToast(prev => ({ ...prev, visible: false })), 4000);
+        return;
+      }
+
       let role = "resident";
+      
       if (userSnap.exists()) {
         role = userSnap.data().role || "resident";
       } else {
-        // Create new user document
         await setDoc(userRef, {
-          email: values.email,
+          email: normalizedEmail,
+          username: user.displayName || 'User', 
           totalPoints: 0,
           role: "resident"
         });
@@ -97,24 +116,22 @@ export default function Login() {
 
       setToast({ message: 'Login successful!', type: 'success', visible: true });
       
-      // Immediate navigation without setTimeout to prevent glitch
       const redirectPath = role === "admin" ? "/adminpanel" : "/dashboard";
-      navigate(redirectPath, { replace: true });
+      
+      // Add a slight delay so AuthContext can update before RouteGuard checks it
+      setTimeout(() => {
+        navigate(redirectPath, { replace: true });
+      }, 500);
       
     } catch (err) {
       console.error(err);
       setIsLoggingIn(false);
       
       let errorMessage = 'Login failed. Please check your credentials.';
-      if (err.code === 'auth/user-not-found') {
-        errorMessage = 'No account found with this email address.';
-      } else if (err.code === 'auth/wrong-password') {
-        errorMessage = 'Incorrect password. Please try again.';
-      } else if (err.code === 'auth/invalid-email') {
-        errorMessage = 'Invalid email address format.';
-      } else if (err.code === 'auth/user-disabled') {
-        errorMessage = 'This account has been disabled.';
-      }
+      if (err.code === 'auth/user-not-found') errorMessage = 'No account found with this email address.';
+      else if (err.code === 'auth/wrong-password') errorMessage = 'Incorrect password. Please try again.';
+      else if (err.code === 'auth/invalid-email') errorMessage = 'Invalid email address format.';
+      else if (err.code === 'auth/user-disabled') errorMessage = 'This account has been disabled.';
       
       setToast({ message: errorMessage, type: 'error', visible: true });
       setTimeout(() => setToast(prev => ({ ...prev, visible: false })), 4000);
@@ -123,40 +140,54 @@ export default function Login() {
     setIsValidating(false);
   };
 
-  const handleGoogleLogin = async () => {
-    setIsLoggingIn(true);
+const handleGoogleLogin = async (e) => {
+  if (e) e.preventDefault();
+  setIsLoggingIn(true);
+  
+  try {
+    const userCred = await signInWithGoogle();
+    const user = userCred.user || userCred; 
+    const normalizedEmail = user.email.trim().toLowerCase();
     
-    try {
-      const user = await signInWithGoogle();
-      const userRef = doc(db, "users", user.uid);
-      const userSnap = await getDoc(userRef);
+    // 1. Force token refresh to ensure claims are active
+    await user.getIdToken(true);
 
-      let role = "resident";
-      if (userSnap.exists()) {
-        role = userSnap.data().role || "resident";
-      } else {
-        await setDoc(userRef, {
-          email: user.email,
-          username: user.displayName,
-          profilePicture: user.photoURL,
-          totalPoints: 0,
-          role: "resident"
-        });
-      }
+    // 2. Check if the user document exists
+    const userRef = doc(db, "users", user.uid);
+    const userSnap = await getDoc(userRef);
 
-      setToast({ message: 'Google login successful!', type: 'success', visible: true });
-      
-      // Immediate navigation without setTimeout
-      const redirectPath = role === "admin" ? "/adminpanel" : "/dashboard";
-      navigate(redirectPath, { replace: true });
-      
-    } catch (error) {
-      console.error("Google login error:", error);
-      setIsLoggingIn(false);
-      setToast({ message: error.message || 'Google login failed.', type: 'error', visible: true });
-      setTimeout(() => setToast(prev => ({ ...prev, visible: false })), 4000);
+    let role = "resident";
+    
+    if (userSnap.exists()) {
+      role = userSnap.data().role || "resident";
+    } else {
+      // 3. Create document FIRST, then wait for it to complete
+      await setDoc(userRef, {
+        email: normalizedEmail,
+        username: user.displayName || 'User',
+        profilePicture: user.photoURL || '',
+        totalPoints: 0,
+        role: "resident",
+        createdAt: new Date().toISOString()
+      });
     }
-  };
+
+    setToast({ message: 'Google login successful!', type: 'success', visible: true });
+    
+    // 4. ONLY NOW navigate to the dashboard
+    const redirectPath = role === "admin" ? "/adminpanel" : "/dashboard";
+    
+    // Give Firestore a split second to propagate
+    setTimeout(() => {
+      navigate(redirectPath, { replace: true });
+    }, 500);
+    
+  } catch (error) {
+    console.error("Google login error:", error);
+    setIsLoggingIn(false);
+    setToast({ message: error.message || 'Google login failed.', type: 'error', visible: true });
+  }
+};
 
   const renderError = (field) =>
     touched[field] && errors[field] && (
@@ -173,7 +204,6 @@ export default function Login() {
       : 'border-gray-200 bg-white text-gray-900 focus:border-emerald-500 hover:border-gray-300'}
   `;
 
-  // Show loading screen while logging in to prevent UI flash
   if (isLoggingIn) {
     return (
       <div className={`${isDark ? 'bg-gray-900' : 'bg-emerald-50'} min-h-screen flex items-center justify-center transition-colors duration-300`}>
@@ -196,6 +226,7 @@ export default function Login() {
         </div>
 
         <button
+          type="button"
           onClick={handleGoogleLogin}
           disabled={isValidating}
           className={`${isDark ? 'border-gray-600 text-gray-200 hover:bg-gray-700' : 'border-gray-200 text-gray-700 hover:bg-gray-50'} w-full flex items-center justify-center gap-3 py-3 px-4 border-2 rounded-xl transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed`}
@@ -267,6 +298,7 @@ export default function Login() {
         <p className={`${isDark ? 'text-gray-400' : 'text-gray-500'} text-center text-sm`}>
           Don't have an account?{' '}
           <button
+            type="button"
             onClick={() => navigate("/signup")}
             className={`${isDark ? 'text-emerald-400' : 'text-emerald-600'} font-semibold hover:underline`}
             disabled={isValidating}

@@ -161,6 +161,7 @@ export default function MyRedemptions() {
   const [selectedBlock, setSelectedBlock] = useState(null);
   const [showBlockModal, setShowBlockModal] = useState(false);
   const [confirmCancel, setConfirmCancel] = useState({ show: false, redemption: null });
+  const [cancellationSuccess, setCancellationSuccess] = useState(null);
 
   const navigate = useNavigate();
   const location = useLocation();
@@ -239,6 +240,11 @@ export default function MyRedemptions() {
 
     try {
       let refundPoints = 0;
+      let restoreQty = 1;
+
+      // Step 1: Cancel the redemption and refund points atomically.
+      // The Firestore rules permit users to update redemptions they own
+      // with only {status, cancelledAt} changed, and to update their own user doc.
       await runTransaction(db, async (transaction) => {
         const redemptionRef = doc(db, "redemptions", redemption.id);
         const userRef = doc(db, "users", currentUser.uid);
@@ -254,7 +260,8 @@ export default function MyRedemptions() {
           throw new Error("Only pending redemptions can be cancelled.");
         }
 
-        refundPoints = redemptionData.cost ?? 0;
+        refundPoints = redemptionData.totalCost ?? redemptionData.cost ?? 0;
+        restoreQty = redemptionData.quantity ?? 1;
         const currentPoints = userSnap.data().totalPoints ?? 0;
 
         transaction.update(redemptionRef, {
@@ -264,6 +271,22 @@ export default function MyRedemptions() {
 
         transaction.update(userRef, { totalPoints: currentPoints + refundPoints });
       });
+
+      // Step 2: Restore the stock on the reward now that cancellation is confirmed.
+      // The Firestore rules allow authenticated users to increase stock (restoration).
+      try {
+        const rewardRef = doc(db, "rewards", redemption.rewardId);
+        await runTransaction(db, async (transaction) => {
+          const rewardSnap = await transaction.get(rewardRef);
+          if (rewardSnap.exists()) {
+            const currentStock = rewardSnap.data().stock ?? 0;
+            transaction.update(rewardRef, { stock: currentStock + restoreQty });
+          }
+        });
+      } catch (stockErr) {
+        // Non-fatal: stock restore failed but cancellation + refund already succeeded.
+        console.warn("Stock restore failed after cancellation:", stockErr);
+      }
 
       await addToLedger(
         currentUser.uid,
@@ -276,6 +299,20 @@ export default function MyRedemptions() {
         }
       );
 
+      // 📋 Write a point_transaction so the cancellation appears in transaction history
+      await addDoc(collection(db, "point_transactions"), {
+        userId: currentUser.uid,
+        type: "redemption_cancelled",
+        points: refundPoints,          // positive — credit back to user
+        description: `Redemption Cancelled – "${redemption.rewardName || "reward"}"`,
+        refundNote: "Points Refunded",
+        rewardName: redemption.rewardName ?? null,
+        rewardId: redemption.rewardId ?? null,
+        redemptionId: redemption.id,
+        category: "refund",
+        timestamp: serverTimestamp(),
+      });
+
       await addNotification(
         currentUser.uid,
         `Your redemption for "${redemption.rewardName || "reward"}" has been cancelled. ${refundPoints > 0 ? `${refundPoints} points have been refunded to your account.` : ""}`,
@@ -285,6 +322,12 @@ export default function MyRedemptions() {
           status: "cancelled",
         }
       );
+
+      setCancellationSuccess({
+        rewardName: redemption.rewardName || "reward",
+        refundedPoints: refundPoints,
+      });
+      setTimeout(() => setCancellationSuccess(null), 4500);
 
     } catch (err) {
       console.error("Error cancelling redemption:", err);
@@ -423,6 +466,44 @@ export default function MyRedemptions() {
         block={selectedBlock} 
         onClose={() => setShowBlockModal(false)} 
       />
+
+      {/* Cancellation Success Popup */}
+      {cancellationSuccess && (
+        <div className="fixed top-6 left-1/2 -translate-x-1/2 z-[60] w-[calc(100%-2rem)] max-w-sm pointer-events-none">
+          <div className={`pointer-events-auto flex items-center gap-4 px-5 py-4 rounded-2xl shadow-2xl border ${
+            isDark
+              ? "bg-gray-800 border-green-700/60 text-white"
+              : "bg-white border-green-300 text-gray-900"
+          }`}
+            style={{ animation: "slideDownFade 0.35s cubic-bezier(0.16,1,0.3,1)" }}
+          >
+            <div className="w-10 h-10 rounded-full bg-green-100 flex items-center justify-center flex-shrink-0">
+              <CheckCircle className="w-6 h-6 text-green-600" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="font-bold text-sm">Cancellation Successful!</p>
+              <p className={`text-xs mt-0.5 ${isDark ? "text-gray-400" : "text-gray-500"}`}>
+                <span className="truncate block">{cancellationSuccess.rewardName}</span>
+                {cancellationSuccess.refundedPoints > 0 && (
+                  <span className="text-green-500 font-medium">+{cancellationSuccess.refundedPoints} pts refunded</span>
+                )}
+              </p>
+            </div>
+            <button
+              onClick={() => setCancellationSuccess(null)}
+              className={`p-1.5 rounded-full flex-shrink-0 transition-colors ${isDark ? "hover:bg-gray-700 text-gray-400" : "hover:bg-gray-100 text-gray-400"}`}
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          <style>{`
+            @keyframes slideDownFade {
+              from { opacity: 0; transform: translateY(-16px); }
+              to   { opacity: 1; transform: translateY(0);     }
+            }
+          `}</style>
+        </div>
+      )}
 
       {confirmCancel.show && (
         <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm">

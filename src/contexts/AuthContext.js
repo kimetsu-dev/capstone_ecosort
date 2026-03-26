@@ -6,7 +6,8 @@ import {
   signOut,
   createUserWithEmailAndPassword,
 } from "firebase/auth";
-import { doc, getDoc, setDoc } from "firebase/firestore";
+
+// doc/getDoc/setDoc are handled in Login.js and Signup.js directly
 
 const AuthContext = createContext(undefined);
 
@@ -16,79 +17,70 @@ export const AuthProvider = ({ children }) => {
   const [loading, setLoading] = useState(true);
   const [authInitialized, setAuthInitialized] = useState(false);
 
-useEffect(() => {
-  const unsubscribe = onAuthStateChanged(auth, async (user) => {
-    try {
-      setCurrentUser(user);
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      if (user) {
+        try {
+          // 1. Reload the user to get the latest emailVerified status and
+          //    any other profile changes (e.g. displayName set during signup).
+          //    This is critical — without reload(), emailVerified can be stale.
+          await user.reload();
 
-      if (!user) {
-        setIsAdmin(false);
-        setLoading(false);
-        setAuthInitialized(true);
-        return;
-      }
+          // 2. Get the reloaded user object from auth (reload() mutates in place
+          //    but we re-read from auth.currentUser to get the freshest copy).
+          const freshUser = auth.currentUser;
 
-      // 🔑 THE FIX: Get the token result to check for custom claims
-      // Passing 'true' forces a refresh to pick up the new admin status immediately
-      const idTokenResult = await user.getIdTokenResult(true);
-      
-      console.log("Verified claims:", idTokenResult.claims); // Debug: check your console!
-      
-      if (idTokenResult.claims.admin) {
-        setIsAdmin(true);
+          // 3. Force a token refresh so Firestore security rules instantly
+          //    recognise the correct provider claims and admin status.
+          //
+          //    NOTE: We do NOT disable/enable Firestore network here.
+          //    The disableNetwork/enableNetwork pattern caused all active
+          //    onSnapshot listeners (admin tabs, dashboard stats, analytics, etc.)
+          //    to receive permission errors during the downtime and fail silently,
+          //    making data disappear. The token refresh alone is sufficient —
+          //    Firestore SDK re-evaluates security rules on the next request.
+          const idTokenResult = await freshUser.getIdTokenResult(true);
+
+          setIsAdmin(!!idTokenResult.claims.admin);
+
+          // 4. Set the fresh user object — this is what all consumers get.
+          setCurrentUser(freshUser);
+
+        } catch (error) {
+          console.error("Error in auth state change:", error);
+          // Still set the user so the app doesn't hang on a network hiccup
+          setCurrentUser(user);
+          setIsAdmin(false);
+        }
       } else {
+        // No user logged in — reset everything
+        setCurrentUser(null);
         setIsAdmin(false);
       }
 
-      // 📊 OPTIONAL: Still fetch Firestore for other data (points, etc.)
-      const userDocRef = doc(db, "users", user.uid);
-      const userDocSnap = await getDoc(userDocRef);
-      
-      if (!userDocSnap.exists()) {
-        console.warn("Creating missing user doc...");
-        await setDoc(userDocRef, {
-          email: user.email,
-          role: "resident",
-          totalPoints: 0,
-          createdAt: new Date(),
-        });
-      }
-
-    } catch (error) {
-      console.error("Error in auth state change:", error);
-      setIsAdmin(false);
-    } finally {
       setLoading(false);
       setAuthInitialized(true);
-    }
-  });
+    });
 
-  return () => unsubscribe();
-}, []);
+    return () => unsubscribe();
+  }, []);
 
   // Sign in with email and password
   const loginUser = async (email, password) => {
     try {
       await signInWithEmailAndPassword(auth, email, password);
-      // Don't set loading here - let onAuthStateChanged handle it
     } catch (error) {
       throw error;
     }
   };
 
-  // Create user with email and password
+  // createUser is intentionally a thin wrapper — the real signup flow
+  // (verification email, displayName, Firestore doc) is handled in Signup.js.
+  // This exists only for legacy callers; prefer using Signup.js directly.
   const createUser = async (email, password) => {
     try {
       const userCred = await createUserWithEmailAndPassword(auth, email, password);
-      const user = userCred.user;
-
-      // Create Firestore user document
-      await setDoc(doc(db, "users", user.uid), {
-        email: user.email,
-        role: "resident",
-        totalPoints: 0,
-        createdAt: new Date(),
-      });
+      return userCred;
     } catch (error) {
       throw error;
     }
@@ -97,11 +89,10 @@ useEffect(() => {
   // Logout user
   const logOut = async () => {
     try {
-      // Reset states immediately for faster UI response
-      setCurrentUser(null);
-      setIsAdmin(false);
-      setLoading(true);
-      
+      // Do NOT set loading: true here — it causes RouteGuard to render
+      // <LoadingSpinner> and unmount all page components, which kills active
+      // Firestore listeners before they have a chance to clean up properly.
+      // The onAuthStateChanged listener above will handle resetting state.
       await signOut(auth);
     } catch (error) {
       console.error("Logout error:", error);

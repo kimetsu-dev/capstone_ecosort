@@ -7,7 +7,8 @@ import {
   collection,
   onSnapshot,
   query,
-  orderBy 
+  orderBy,
+  runTransaction
 } from "firebase/firestore";
 import { db } from "../../firebase";
 import { addToLedger } from "../../utils/ledgerService";
@@ -57,6 +58,10 @@ function RejectRedemptionModal({ isOpen, onClose, onConfirm, isDark }) {
           <p className={`text-sm ${isDark ? "text-gray-400" : "text-gray-600"}`}>
             Select a reason for rejection. This will be included in the user's notification.
           </p>
+          <div className={`p-3 rounded-lg border flex items-start gap-2 text-sm ${isDark ? "bg-green-900/20 border-green-700 text-green-300" : "bg-green-50 border-green-200 text-green-700"}`}>
+            <span className="flex-shrink-0 mt-0.5">💚</span>
+            <span>The user's points will be <strong>automatically refunded</strong> upon rejection.</span>
+          </div>
           <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
             {REDEMPTION_REJECT_REASONS.map((r) => (
               <label key={r} className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-all ${
@@ -118,20 +123,6 @@ async function addNotification(userId, message, type = "redemption_status", extr
   });
 }
 
-async function createPointTransaction({ userId, points, description, type = "points_awarded" }) {
-  try {
-    await addDoc(collection(db, "point_transactions"), {
-      userId,
-      points,
-      description,
-      timestamp: serverTimestamp(),
-      type,
-    });
-  } catch (error) {
-    console.error("Failed to create point transaction:", error);
-  }
-}
-
 const RedemptionsTab = ({ 
   redemptions, 
   users, 
@@ -159,57 +150,84 @@ const RedemptionsTab = ({
     if (pendingOnly) setActiveTab("pending");
   }, [pendingOnly]);
 
+  // Real-time redemptions listener with permission-denied retry.
+  // The isAdmin() Firestore rule does a get(users/{uid}) round-trip that can
+  // race against token propagation on first login, returning permission-denied
+  // and leaving the tab empty.  We catch that specific error and resubscribe
+  // after 2 s — by then the token is always stable.
   useEffect(() => {
-    const redemptionsQuery = query(
-      collection(db, "redemptions"),
-      orderBy("redeemedAt", "desc")
-    );
+    let unsubscribe = null;
+    let retryTimer  = null;
+    let cancelled   = false;
 
-    const unsubscribe = onSnapshot(
-      redemptionsQuery,
-      (snapshot) => {
-        try {
-          const allRedemptions = snapshot.docs.map(doc => ({ 
-            id: doc.id, 
-            ...doc.data() 
-          }));
-          
-          const total = allRedemptions.length;
-          const pending = allRedemptions.filter(r => r.status === "pending").length;
-          const successful = allRedemptions.filter(r => r.status === "claimed").length;
-          const cancelled = allRedemptions.filter(r => r.status === "cancelled").length;
-          const rejected = allRedemptions.filter(r => r.status === "rejected").length;
-          const successRate = (successful + cancelled + rejected) > 0 ? ((successful / (successful + cancelled + rejected)) * 100) : 0;
-          
-          const totalPointsRedeemed = allRedemptions
-            .filter(r => r.status === "claimed")
-            .reduce((sum, r) => {
-              const points = parseFloat(r.cost) || parseFloat(r.pointCost) || 0;
-              return sum + points;
-            }, 0);
+    const subscribe = () => {
+      const redemptionsQuery = query(
+        collection(db, "redemptions"),
+        orderBy("redeemedAt", "desc")
+      );
 
-          setLiveStats({ 
-            total, 
-            pending,
-            successful, 
-            cancelled,
-            rejected,
-            successRate: isNaN(successRate) ? 0 : successRate,
-            totalPointsRedeemed
-          });
-          setIsStatsLoading(false);
-        } catch (error) {
-          console.error("Error processing live redemption stats:", error);
-          setIsStatsLoading(false);
+      unsubscribe = onSnapshot(
+        redemptionsQuery,
+        (snapshot) => {
+          if (cancelled) return;
+          try {
+            const allRedemptions = snapshot.docs.map(doc => ({
+              id: doc.id,
+              ...doc.data()
+            }));
+
+            const total     = allRedemptions.length;
+            const pending   = allRedemptions.filter(r => r.status === "pending").length;
+            const successful = allRedemptions.filter(r => r.status === "claimed").length;
+            const cancelled_ = allRedemptions.filter(r => r.status === "cancelled").length;
+            const rejected  = allRedemptions.filter(r => r.status === "rejected").length;
+            const successRate = (successful + cancelled_ + rejected) > 0
+              ? ((successful / (successful + cancelled_ + rejected)) * 100)
+              : 0;
+
+            const totalPointsRedeemed = allRedemptions
+              .filter(r => r.status === "claimed")
+              .reduce((sum, r) => {
+                const points = parseFloat(r.cost) || parseFloat(r.pointCost) || 0;
+                return sum + points;
+              }, 0);
+
+            setLiveStats({
+              total,
+              pending,
+              successful,
+              cancelled: cancelled_,
+              rejected,
+              successRate: isNaN(successRate) ? 0 : successRate,
+              totalPointsRedeemed,
+            });
+            setIsStatsLoading(false);
+          } catch (error) {
+            console.error("Error processing live redemption stats:", error);
+            setIsStatsLoading(false);
+          }
+        },
+        (error) => {
+          if (cancelled) return;
+          if (error.code === "permission-denied") {
+            console.warn("Redemptions: permission-denied, retrying in 2 s…");
+            if (unsubscribe) { unsubscribe(); unsubscribe = null; }
+            retryTimer = setTimeout(() => { if (!cancelled) subscribe(); }, 2000);
+          } else {
+            console.error("Error with live redemption stats listener:", error);
+            setIsStatsLoading(false);
+          }
         }
-      },
-      (error) => {
-        console.error("Error with live redemption stats listener:", error);
-        setIsStatsLoading(false);
-      }
-    );
+      );
+    };
 
-    return () => unsubscribe();
+    subscribe();
+
+    return () => {
+      cancelled = true;
+      if (retryTimer) clearTimeout(retryTimer);
+      if (unsubscribe) unsubscribe();
+    };
   }, []);
 
   const updateRedemptionStatus = async (redemptionId, newStatus, reason = null) => {
@@ -263,26 +281,84 @@ const RedemptionsTab = ({
     }
   };
 
+  // ── FIXED: rejectRedemption refunds points AND restores stock ───────────────
   const rejectRedemption = async (redemption, reason) => {
     if (!redemption) return;
     try {
-      await updateRedemptionStatus(redemption.id, "rejected", reason);
+      const refundPoints = redemption.totalCost ?? redemption.cost ?? redemption.pointCost ?? 0;
+      const restoreQty = redemption.quantity ?? 1;
 
+      // 1. Atomically update redemption status, refund user points, restore stock
+      await runTransaction(db, async (transaction) => {
+        const redemptionRef = doc(db, "redemptions", redemption.id);
+        const userRef = doc(db, "users", redemption.userId);
+        const rewardRef = doc(db, "rewards", redemption.rewardId);
+
+        const redemptionSnap = await transaction.get(redemptionRef);
+        const userSnap = await transaction.get(userRef);
+        const rewardSnap = await transaction.get(rewardRef);
+
+        if (!redemptionSnap.exists()) throw new Error("Redemption not found.");
+        if (!userSnap.exists()) throw new Error("User not found.");
+
+        // Only reject if still pending
+        if (redemptionSnap.data().status !== "pending") {
+          throw new Error("Only pending redemptions can be rejected.");
+        }
+
+        const currentPoints = userSnap.data().totalPoints ?? 0;
+
+        transaction.update(redemptionRef, {
+          status: "rejected",
+          rejectedAt: serverTimestamp(),
+          ...(reason ? { rejectionReason: reason } : {}),
+        });
+
+        // Refund the points back to the user
+        transaction.update(userRef, {
+          totalPoints: currentPoints + refundPoints,
+        });
+
+        // Restore the stock back to the reward
+        if (rewardSnap.exists()) {
+          const currentStock = rewardSnap.data().stock ?? 0;
+          transaction.update(rewardRef, { stock: currentStock + restoreQty });
+        }
+      });
+
+      // 2. Add refund entry to the blockchain ledger
       await addToLedger(
         redemption.userId,
         "REDEMPTION_REJECTED",
-        0,
+        refundPoints, // positive = refund
         {
           redemptionId: redemption.id,
           rewardId: redemption.rewardId ?? null,
           rewardName: redemption.rewardName ?? null,
+          refundedPoints: refundPoints,
           ...(reason ? { reason } : {}),
         }
       );
 
+      // 3. Create a point_transaction record so the refund appears in Transactions
+      await addDoc(collection(db, "point_transactions"), {
+        userId: redemption.userId,
+        type: "points_refunded",
+        points: refundPoints, // positive so it shows as a credit
+        description: `Reward Rejected – "${redemption.rewardName || "reward"}"`,
+        refundNote: "Points Refunded",
+        rewardName: redemption.rewardName ?? null,
+        rewardId: redemption.rewardId ?? null,
+        redemptionId: redemption.id,
+        category: "refund",
+        timestamp: serverTimestamp(),
+        ...(reason ? { rejectionReason: reason } : {}),
+      });
+
+      // 4. Notify the user
       const message = reason
-        ? `Your redemption for "${redemption.rewardName || "reward"}" was rejected. Reason: ${reason}`
-        : `Your redemption for "${redemption.rewardName || "reward"}" has been rejected.`;
+        ? `Your redemption for "${redemption.rewardName || "reward"}" was rejected. Reason: ${reason}. ${refundPoints > 0 ? `${refundPoints} points have been refunded to your account.` : ""}`
+        : `Your redemption for "${redemption.rewardName || "reward"}" has been rejected. ${refundPoints > 0 ? `${refundPoints} points have been refunded to your account.` : ""}`;
 
       await addNotification(
         redemption.userId,
@@ -295,12 +371,13 @@ const RedemptionsTab = ({
         }
       );
 
-      showToast("Redemption rejected", "success");
+      showToast(`Redemption rejected — ${refundPoints} pts refunded to user`, "success");
     } catch (error) {
       console.error("Failed to reject redemption:", error);
-      showToast("Failed to reject redemption", "error");
+      showToast(error.message || "Failed to reject redemption", "error");
     }
   };
+
 
   const getUserEmail = (userId) => {
     const user = users.find((u) => u.id === userId);
@@ -606,7 +683,7 @@ const RedemptionsTab = ({
                               </div>
                               {reward && (
                                 <div className={`text-xs ${isDark ? "text-gray-500" : "text-slate-500"}`}>
-                                  {reward.cost} points • {reward.category}
+                                  {redemption.quantity > 1 ? `${redemption.totalCost ?? (reward.cost * redemption.quantity)} pts total (${reward.cost} × ${redemption.quantity})` : `${reward.cost} points`} • {reward.category}
                                 </div>
                               )}
                             </div>
@@ -649,28 +726,26 @@ const RedemptionsTab = ({
                         </div>
                       </div>
                       
+                      {/* Refund notice */}
+                      <div className={`flex items-center gap-2 text-xs px-3 py-2 rounded-lg border ${
+                        isDark ? "bg-amber-900/20 border-amber-700/50 text-amber-300" : "bg-amber-50 border-amber-200 text-amber-700"
+                      }`}>
+                        <span>💡</span>
+                        <span>Rejecting will automatically refund <strong>{redemption.totalCost ?? redemption.cost ?? redemption.pointCost ?? 0} points</strong> to the user.</span>
+                      </div>
+
                       <div className="flex flex-col sm:flex-row space-y-2 sm:space-y-0 sm:space-x-2 pt-3 border-t border-gray-200 dark:border-gray-600">
                         <button
                           onClick={() => markRedemptionClaimed(redemption)}
                           className="flex-1 px-4 py-2.5 text-white bg-gradient-to-r from-green-600 to-green-700 rounded-lg hover:from-green-700 hover:to-green-800 text-sm font-medium transition-all duration-200 flex items-center justify-center space-x-2 shadow-lg hover:shadow-xl transform hover:scale-[1.02]"
                         >
-                          <span>Mark Claimed</span>
+                          <span>✅ Mark Claimed</span>
                         </button>
                         <button
                           onClick={() => setRejectModal({ open: true, redemption })}
                           className="flex-1 px-4 py-2.5 text-white bg-gradient-to-r from-red-600 to-red-700 rounded-lg hover:from-red-700 hover:to-red-800 text-sm font-medium transition-all duration-200 flex items-center justify-center space-x-2 shadow-lg hover:shadow-xl transform hover:scale-[1.02]"
                         >
-                          <span>Reject</span>
-                        </button>
-                        <button
-                          onClick={() => updateRedemptionStatus(redemption.id, "cancelled")}
-                          className={`flex-1 px-4 py-2.5 rounded-lg text-sm font-medium transition-all duration-200 flex items-center justify-center border ${
-                            isDark
-                              ? "bg-gray-700 hover:bg-gray-600 text-gray-300 border-gray-600"
-                              : "bg-gray-100 hover:bg-gray-200 text-gray-700 border-gray-300"
-                          }`}
-                        >
-                          <span>Cancel</span>
+                          <span>❌ Reject + Refund</span>
                         </button>
                       </div>
                     </div>
@@ -739,7 +814,7 @@ const RedemptionsTab = ({
                           </div>
                           {reward && (
                             <div className={`text-xs ${isDark ? "text-gray-500" : "text-slate-500"}`}>
-                              {reward.cost} points • {reward.category}
+                              {redemption.quantity > 1 ? `${redemption.totalCost ?? (reward.cost * redemption.quantity)} pts total (${reward.cost} × ${redemption.quantity})` : `${reward.cost} points`} • {reward.category}
                             </div>
                           )}
                         </div>
@@ -781,23 +856,23 @@ const RedemptionsTab = ({
                                 {formatDate(redemption.cancelledAt)}
                               </div>
                             )}
-                            {redemption.rejectedAt && (
-                              <div className={`flex items-center gap-1.5 text-xs ${isDark ? "text-red-400" : "text-red-600"}`}>
-                                <span className="w-1.5 h-1.5 rounded-full bg-red-500 flex-shrink-0" />
-                                <span className="font-medium">Rejected:</span>
-                                {formatDate(redemption.rejectedAt)}
-                              </div>
-                            )}
                           </div>
                         </div>
                       </div>
                     </div>
-                    <div className="flex-shrink-0 mt-3 sm:mt-0 sm:ml-4">
+                    <div className="flex-shrink-0 mt-3 sm:mt-0 sm:ml-4 flex flex-col items-end gap-2">
                       <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full border ${
                         getStatusBadgeStyle(redemption.status)
                       }`}>
                         {redemption.status}
                       </span>
+                      {redemption.status === "cancelled" && (
+                        <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full ${
+                          isDark ? "bg-green-900/30 text-green-400" : "bg-green-50 text-green-700"
+                        }`}>
+                          ↩ Points refunded
+                        </span>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -851,7 +926,7 @@ const RedemptionsTab = ({
                             )}
                           </div>
                           {reward && (
-                            <div className={`text-xs ${isDark ? "text-gray-500" : "text-slate-500"}`}>{reward.cost} points • {reward.category}</div>
+                            <div className={`text-xs ${isDark ? "text-gray-500" : "text-slate-500"}`}>{redemption.quantity > 1 ? `${redemption.totalCost ?? (reward.cost * redemption.quantity)} pts total (${reward.cost} × ${redemption.quantity})` : `${reward.cost} points`} • {reward.category}</div>
                           )}
                         </div>
                         <div>
@@ -879,9 +954,14 @@ const RedemptionsTab = ({
                         </div>
                       </div>
                     </div>
-                    <div className="flex-shrink-0 mt-3 sm:mt-0 sm:ml-4">
+                    <div className="flex-shrink-0 mt-3 sm:mt-0 sm:ml-4 flex flex-col items-end gap-2">
                       <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full border ${getStatusBadgeStyle(redemption.status)}`}>
                         {redemption.status}
+                      </span>
+                      <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full ${
+                        isDark ? "bg-green-900/30 text-green-400" : "bg-green-50 text-green-700"
+                      }`}>
+                        ↩ Points refunded
                       </span>
                     </div>
                   </div>

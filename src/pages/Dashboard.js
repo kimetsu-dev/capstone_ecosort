@@ -4,6 +4,7 @@ import { FiUser, FiMenu, FiX, FiLogOut, FiChevronLeft, FiBell } from "react-icon
 import { useTheme } from "../contexts/ThemeContext";
 import { DashboardCalendar, InlineCalendar } from "../components/DashboardCalendar";
 import NotificationCenter from "../components/NotificationCenter";
+import NotificationsListener from "../components/NotificationsListener";
 import UpdateBanner from '../components/UpdateBanner';
 import SubmitWaste from "./SubmitWaste";
 import Rewards from "./Rewards";
@@ -316,16 +317,23 @@ export default function Dashboard() {
   };
 
   const allSchedules = useMemo(() => {
-    return [
-      ...collectionSchedules.map(schedule => ({
-        ...schedule,
-        title: `Collection: ${schedule.area || schedule.barangay || 'Area'}`,
-      })),
-      ...submissionSchedules.map(schedule => ({
-        ...schedule,
-        title: `Submission: ${schedule.area || schedule.barangay || 'Center'}`,
-      })),
-    ];
+    // Always tag collection schedules with type so calendar logic can branch correctly.
+    const collectionEntries = collectionSchedules.map(schedule => ({
+      ...schedule,
+      type: "collection",
+      title: `Collection: ${schedule.area || schedule.barangay || 'Area'}`,
+    }));
+
+    // Keep raw submission schedules intact with their full operatingDays map so the
+    // calendar can correctly mark every selected day (Mon+Tue, Mon-Fri, whole week, etc.)
+    // The calendar's isScheduledForDate reads operatingDays[dayName].selected directly.
+    const submissionEntries = submissionSchedules.map(schedule => ({
+      ...schedule,
+      type: "submission",
+      title: `Submission: ${schedule.area || schedule.barangay || 'Center'}`,
+    }));
+
+    return [...collectionEntries, ...submissionEntries];
   }, [collectionSchedules, submissionSchedules]);
 
   const getNextCollectionDate = () => {
@@ -371,30 +379,68 @@ export default function Dashboard() {
 
     const today = new Date();
     const currentDay = today.getDay();
-    const currentTime = today.getHours() * 60 + today.getMinutes();
+    const currentTimeMin = today.getHours() * 60 + today.getMinutes();
 
     let nearestSubmission = null;
     let minDaysAway = Infinity;
+
     for (const schedule of submissionSchedules) {
-      const scheduleDayNum = DAY_MAP[schedule.day.toLowerCase()];
-      
-      const [startHours, startMinutes] = schedule.startTime.split(':').map(Number);
-      const scheduleTime = startHours * 60 + startMinutes;
+      // Support new multi-day operatingDays format
+      if (schedule.operatingDays) {
+        for (const [dayName, dayData] of Object.entries(schedule.operatingDays)) {
+          if (!dayData?.selected) continue;
+          const scheduleDayNum = DAY_MAP[dayName.toLowerCase()];
+          if (scheduleDayNum === undefined) continue;
 
-      let daysUntil = scheduleDayNum - currentDay;
-      if (daysUntil < 0 || (daysUntil === 0 && currentTime >= scheduleTime)) {
-        daysUntil += 7;
-      }
+          const [startHours, startMinutes] = (dayData.startTime || "08:00").split(':').map(Number);
+          const scheduleTime = startHours * 60 + startMinutes;
 
-      if (daysUntil < minDaysAway) {
-        minDaysAway = daysUntil;
-        const submissionDate = new Date(today);
-        submissionDate.setDate(today.getDate() + daysUntil);
-        submissionDate.setHours(startHours, startMinutes, 0, 0);
-        nearestSubmission = {
-          date: submissionDate,
-          schedule: schedule
-        };
+          let daysUntil = scheduleDayNum - currentDay;
+          if (daysUntil < 0 || (daysUntil === 0 && currentTimeMin >= scheduleTime)) {
+            daysUntil += 7;
+          }
+
+          if (daysUntil < minDaysAway) {
+            minDaysAway = daysUntil;
+            const submissionDate = new Date(today);
+            submissionDate.setDate(today.getDate() + daysUntil);
+            submissionDate.setHours(startHours, startMinutes, 0, 0);
+            nearestSubmission = {
+              date: submissionDate,
+              // Flatten the day-specific times so downstream rendering works uniformly
+              schedule: {
+                ...schedule,
+                startTime: dayData.startTime || "08:00",
+                endTime: dayData.endTime || "17:00",
+                activeDay: dayName,
+              },
+            };
+          }
+        }
+      } else {
+        // Fallback: legacy single-day format
+        if (!schedule.day) continue;
+        const scheduleDayNum = DAY_MAP[schedule.day.toLowerCase()];
+        if (scheduleDayNum === undefined) continue;
+
+        const [startHours, startMinutes] = (schedule.startTime || "08:00").split(':').map(Number);
+        const scheduleTime = startHours * 60 + startMinutes;
+
+        let daysUntil = scheduleDayNum - currentDay;
+        if (daysUntil < 0 || (daysUntil === 0 && currentTimeMin >= scheduleTime)) {
+          daysUntil += 7;
+        }
+
+        if (daysUntil < minDaysAway) {
+          minDaysAway = daysUntil;
+          const submissionDate = new Date(today);
+          submissionDate.setDate(today.getDate() + daysUntil);
+          submissionDate.setHours(startHours, startMinutes, 0, 0);
+          nearestSubmission = {
+            date: submissionDate,
+            schedule: schedule,
+          };
+        }
       }
     }
     return nearestSubmission;
@@ -630,6 +676,8 @@ export default function Dashboard() {
   if (isPWA) {
     return (
       <div className={`min-h-screen ${isDark ? 'bg-gray-950' : 'bg-gray-50'} ${calendarOpen ? 'overflow-hidden' : ''}`}>
+        {/* Mounts the toast listener + schedule/ticket watchers for the whole session */}
+        <NotificationsListener userId={currentUserId} />
         <div className={`sticky top-0 z-[1000] ${isDark ? 'bg-gray-900/95' : 'bg-white/95'} border-b ${isDark ? 'border-gray-800' : 'border-gray-200'}`}>
           <div className="px-4 py-3 flex items-center justify-between">
             <div className="flex items-center gap-3">
@@ -1161,6 +1209,8 @@ export default function Dashboard() {
 
   return (
     <div className={`min-h-screen ${isDark ? "bg-gray-900" : "bg-gradient-to-br from-slate-50 via-gray-50 to-slate-100"}`}>
+      {/* Mounts the toast listener + schedule/ticket watchers for the whole session */}
+      <NotificationsListener userId={currentUserId} />
 
       <header className={`lg:hidden backdrop-blur-md fixed top-0 left-0 right-0 z-40 border-b ${
         isDark ? "bg-gray-800/90 text-gray-200 border-gray-700" : "bg-white/90 text-slate-900 border-slate-200/50"
@@ -1406,28 +1456,18 @@ export default function Dashboard() {
                                 <FaCalendarAlt className={isDark ? "text-emerald-400" : "text-emerald-600"} />
                                 <h3 className="font-bold text-sm">Collection Calendar</h3>
                               </div>
-                              <div className="flex items-center gap-3">
-                                <div className="flex items-center gap-1.5">
-                                  <div className="w-2.5 h-2.5 rounded-full bg-blue-500 flex-shrink-0" />
-                                  <span className={`text-[11px] font-medium ${isDark ? 'text-blue-400' : 'text-blue-600'}`}>Collection</span>
-                                </div>
-                                <div className="flex items-center gap-1.5">
-                                  <div className="w-2.5 h-2.5 rounded-full bg-green-500 flex-shrink-0" />
-                                  <span className={`text-[11px] font-medium ${isDark ? 'text-green-400' : 'text-green-600'}`}>Submission</span>
-                                </div>
-                              </div>
+                              {/* InlineCalendar renders as a button that opens a popup */}
+                              <InlineCalendar
+                                selectedDate={selectedDate}
+                                setSelectedDate={setSelectedDate}
+                                isDark={isDark}
+                                schedules={allSchedules}
+                                onOpenChange={setCalendarOpen}
+                              />
                             </div>
                             <p className={`text-xs mt-1.5 ${isDark ? "text-gray-400" : "text-gray-500"}`}>
                               View upcoming waste collection and submission schedules in your area.
                             </p>
-                          </div>
-                          <div className="p-5">
-                            <InlineCalendar
-                              selectedDate={selectedDate}
-                              setSelectedDate={setSelectedDate}
-                              isDark={isDark}
-                              schedules={allSchedules}
-                            />
                           </div>
                         </div>
                       </div>

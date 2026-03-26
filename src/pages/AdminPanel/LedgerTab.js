@@ -1,35 +1,15 @@
 // src/pages/AdminPanel/LedgerTab.js - ENHANCED VERSION
 
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { db } from '../../firebase';
-import { collection, query, orderBy, limit, onSnapshot } from 'firebase/firestore';
+import { collection, query, orderBy, onSnapshot } from 'firebase/firestore';
 import { 
-  ShieldCheck, 
-  AlertTriangle, 
-  Link as LinkIcon, 
-  Hash, 
-  Clock, 
-  User, 
-  Loader2, 
-  Search,
-  Box,
-  ChevronDown,
-  ChevronUp,
-  RotateCw,
-  Database,
-  Recycle, 
-  Gift,
-  Info,
-  BookOpen,
-  Eye,
-  Lock,
-  Globe,
-  Fingerprint,
-  TrendingUp,
-  CheckCircle2
+  ShieldCheck, AlertTriangle, Link as LinkIcon, Hash, Clock, User, 
+  Loader2, Search, Box, ChevronDown, ChevronUp, RotateCw, Database,
+  Recycle, Gift, Info, BookOpen, Eye, Lock, Globe, Fingerprint, 
+  TrendingUp, CheckCircle2
 } from 'lucide-react';
 import { useTheme } from '../../contexts/ThemeContext';
-// Import the central verification function
 import { runAllIntegrityChecks } from '../../utils/blockchainService';
 
 const LedgerTab = () => {
@@ -44,11 +24,12 @@ const LedgerTab = () => {
   const [chainVerification, setChainVerification] = useState(null);
   const [externalDataStatus, setExternalDataStatus] = useState(null);
   
-  // NEW: Educational panel states
   const [showWhyBlockchain, setShowWhyBlockchain] = useState(false);
   const [showTechnicalDetails, setShowTechnicalDetails] = useState(false);
+
+  const PAGE_SIZE = 25;
+  const [currentPage, setCurrentPage] = useState(1);
   
-  // NEW: Impact metrics
   const [impactMetrics, setImpactMetrics] = useState({
     totalBlocks: 0,
     totalPointsTracked: 0,
@@ -56,7 +37,10 @@ const LedgerTab = () => {
     newestBlock: null
   });
 
-  // Helper function for display
+  // ✨ NEW: Refs to prevent race conditions during bulk repair updates
+  const verificationCounter = useRef(0);
+  const verificationTimeout = useRef(null);
+
   const formatTimestamp = (timestamp) => {
     if (timestamp?.toDate) {
         return timestamp.toDate().toLocaleString();
@@ -64,30 +48,47 @@ const LedgerTab = () => {
     return new Date(timestamp).toLocaleString();
   };
 
-  const runVerification = useCallback(async () => {
-    setVerifying(true);
-    setIntegrityStatus("Running full integrity checks...");
-    try {
-        const fullVerification = await runAllIntegrityChecks();
+  // ✨ ENHANCED: Debounced verification to handle rapid bulk updates from repairChain()
+  const runVerification = useCallback((immediate = false) => {
+    // Clear any pending verification
+    if (verificationTimeout.current) {
+        clearTimeout(verificationTimeout.current);
+    }
 
-        // Update overall status
-        setIsValid(fullVerification.valid);
-        setIntegrityStatus(fullVerification.message);
-        
-        // Store detailed results
-        setChainVerification(fullVerification.chainVerification);
-        setExternalDataStatus(fullVerification.dataVerification);
+    const executeVerification = async () => {
+        const currentRequest = ++verificationCounter.current;
+        setVerifying(true);
+        setIntegrityStatus("Running full integrity checks...");
 
-    } catch (error) {
-        setIsValid(false);
-        setIntegrityStatus(`Verification Error: ${error.message}`);
-        console.error("Verification failed:", error);
-    } finally {
-        setVerifying(false);
+        try {
+            const fullVerification = await runAllIntegrityChecks();
+
+            // ONLY update the UI if this is the most recent verification request
+            if (currentRequest === verificationCounter.current) {
+                setIsValid(fullVerification.valid);
+                setIntegrityStatus(fullVerification.message);
+                setChainVerification(fullVerification.chainVerification);
+                setExternalDataStatus(fullVerification.dataVerification);
+                setVerifying(false);
+            }
+        } catch (error) {
+            if (currentRequest === verificationCounter.current) {
+                setIsValid(false);
+                setIntegrityStatus(`Verification Error: ${error.message}`);
+                console.error("Verification failed:", error);
+                setVerifying(false);
+            }
+        }
+    };
+
+    if (immediate) {
+        executeVerification();
+    } else {
+        // Wait 1 second after the last snapshot event before verifying
+        verificationTimeout.current = setTimeout(executeVerification, 1000);
     }
   }, []); 
 
-  // NEW: Calculate impact metrics
   const calculateImpactMetrics = useCallback((blocksData) => {
     if (blocksData.length === 0) return;
     
@@ -105,20 +106,20 @@ const LedgerTab = () => {
   }, []);
 
   useEffect(() => {
-    const q = query(collection(db, "ledger"), orderBy("index", "desc"), limit(50));
+    const q = query(collection(db, "ledger"), orderBy("index", "desc"));
     
     const unsubscribe = onSnapshot(q, (snapshot) => {
         const newBlocks = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
         setBlocks(newBlocks);
         calculateImpactMetrics(newBlocks);
         setLoading(false);
+        // ✨ ENHANCED: Call with immediate=false so it debounces during repairs
+        runVerification(false);
     }, (error) => {
         console.error("Error fetching ledger blocks:", error);
         setIntegrityStatus("Error loading blocks.");
         setLoading(false);
     });
-
-    runVerification(); // Initial verification call
 
     return () => unsubscribe();
   }, [runVerification, calculateImpactMetrics]);
@@ -129,6 +130,18 @@ const LedgerTab = () => {
     block.prevHash.includes(searchTerm) ||
     (block.userId || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
     (block.actionType || '').toLowerCase().includes(searchTerm.toLowerCase())
+  );
+
+  const handleSearchChange = (val) => {
+    setSearchTerm(val);
+    setCurrentPage(1);
+  };
+
+  const invalidBlockIndices = new Set(chainVerification?.invalidBlocks ?? []);
+  const totalPages = Math.max(1, Math.ceil(filteredBlocks.length / PAGE_SIZE));
+  const paginatedBlocks = filteredBlocks.slice(
+    (currentPage - 1) * PAGE_SIZE,
+    currentPage * PAGE_SIZE
   );
 
   return (
@@ -166,7 +179,7 @@ const LedgerTab = () => {
         </div>
       </div>
 
-      {/* NEW: Why Blockchain Educational Panel */}
+      {/* Why Blockchain Educational Panel */}
       {showWhyBlockchain && (
         <div className={`mb-6 p-6 rounded-xl shadow-lg border ${isDark ? "bg-gray-800 border-gray-700" : "bg-white border-gray-200"}`}>
           <h3 className="text-xl font-bold mb-4 flex items-center gap-2">
@@ -174,7 +187,6 @@ const LedgerTab = () => {
             Why We Use Blockchain for the Ledger
           </h3>
           
-          {/* Comparison Table */}
           <div className="overflow-x-auto mb-6">
             <table className="w-full text-sm">
               <thead>
@@ -236,7 +248,6 @@ const LedgerTab = () => {
             </table>
           </div>
 
-          {/* Key Benefits */}
           <div className="grid md:grid-cols-2 gap-4">
             <div className={`p-4 rounded-lg ${isDark ? "bg-gray-700" : "bg-blue-50"}`}>
               <div className="flex items-start gap-3">
@@ -281,7 +292,6 @@ const LedgerTab = () => {
         </div>
       )}
 
-      {/* NEW: Technical Details Panel */}
       {showTechnicalDetails && (
         <div className={`mb-6 p-6 rounded-xl shadow-lg border ${isDark ? "bg-gray-800 border-gray-700" : "bg-white border-gray-200"}`}>
           <h3 className="text-xl font-bold mb-4 flex items-center gap-2">
@@ -290,7 +300,6 @@ const LedgerTab = () => {
           </h3>
           
           <div className="space-y-4">
-            {/* Hash Linking */}
             <div className={`p-4 rounded-lg border-l-4 border-blue-500 ${isDark ? "bg-gray-700" : "bg-blue-50"}`}>
               <h4 className="font-bold mb-2 flex items-center gap-2">
                 <LinkIcon className="w-4 h-4" />
@@ -310,7 +319,6 @@ const LedgerTab = () => {
               </p>
             </div>
 
-            {/* Immutability Guarantee */}
             <div className={`p-4 rounded-lg border-l-4 border-green-500 ${isDark ? "bg-gray-700" : "bg-green-50"}`}>
               <h4 className="font-bold mb-2">Immutability Guarantee</h4>
               <p className="text-sm">
@@ -326,7 +334,6 @@ const LedgerTab = () => {
               </p>
             </div>
 
-            {/* SHA-256 Cryptography */}
             <div className={`p-4 rounded-lg ${isDark ? "bg-black/20" : "bg-gray-100"}`}>
               <h4 className="font-bold mb-2 flex items-center gap-2">
                 <Hash className="w-4 h-4" />
@@ -357,7 +364,6 @@ const LedgerTab = () => {
               </div>
             </div>
 
-            {/* Verification Process */}
             <div className={`p-4 rounded-lg border-l-4 border-purple-500 ${isDark ? "bg-gray-700" : "bg-purple-50"}`}>
               <h4 className="font-bold mb-2">Integrity Verification Process</h4>
               <p className="text-sm">
@@ -377,7 +383,7 @@ const LedgerTab = () => {
         </div>
       )}
 
-      {/* NEW: Ledger Impact Metrics */}
+      {/* Ledger Impact Metrics */}
       <div className={`mb-6 p-6 rounded-xl shadow-lg ${isDark ? "bg-gradient-to-r from-indigo-900/50 to-purple-900/50 border border-indigo-700" : "bg-gradient-to-r from-indigo-50 to-purple-50 border border-indigo-200"}`}>
         <h3 className="text-xl font-bold mb-4 flex items-center gap-2">
           <TrendingUp className="w-6 h-6" />
@@ -447,9 +453,23 @@ const LedgerTab = () => {
                   {!isValid && (
                       <div className="mt-2 space-y-1">
                           {chainVerification && !chainVerification.valid && (
-                              <div className={`text-xs flex items-center gap-2 ${isDark ? 'text-red-300' : 'text-red-700'}`}>
+                              <div className={`text-xs flex items-center gap-2 flex-wrap ${isDark ? 'text-red-300' : 'text-red-700'}`}>
                                   <LinkIcon className="w-3 h-3" /> 
                                   Blockchain Broken at Blocks: {chainVerification.invalidBlocks.join(', ')}
+                                  {chainVerification.invalidBlocks.length > 0 && (() => {
+                                    const firstBroken = Math.min(...chainVerification.invalidBlocks);
+                                    const posInFiltered = filteredBlocks.findIndex(b => b.index === firstBroken);
+                                    if (posInFiltered === -1) return null;
+                                    const targetPage = Math.ceil((posInFiltered + 1) / PAGE_SIZE);
+                                    return (
+                                      <button
+                                        onClick={() => setCurrentPage(targetPage)}
+                                        className={`ml-1 underline font-bold text-xs ${isDark ? 'text-red-200 hover:text-white' : 'text-red-800 hover:text-red-900'}`}
+                                      >
+                                        → Jump to Block #{firstBroken}
+                                      </button>
+                                    );
+                                  })()}
                               </div>
                           )}
                           {externalDataStatus && !externalDataStatus.valid && (
@@ -462,7 +482,7 @@ const LedgerTab = () => {
                   )}
               </div>
               <button
-                onClick={runVerification} 
+                onClick={() => runVerification(true)} // ✨ ENHANCED: Immediate refresh
                 disabled={verifying}
                 className={`flex-shrink-0 flex items-center px-3 py-1 text-xs rounded-full font-semibold transition-colors ${
                   isDark ? 'bg-indigo-700 hover:bg-indigo-800 text-white' : 'bg-indigo-600 hover:bg-indigo-700 text-white'
@@ -485,7 +505,6 @@ const LedgerTab = () => {
                       {externalDataStatus.reason}
                   </p>
                   
-                  {/* Visual indicators of the monitored collections */}
                   <div className="flex flex-wrap gap-2 mb-2">
                       <span className={`inline-flex items-center px-2 py-1 rounded text-xs font-bold ${isDark ? "bg-red-800/50 text-red-200 border border-red-700" : "bg-red-100 text-red-800 border border-red-200"}`}>
                         <Database className="w-3 h-3 mr-1"/> Point Transactions
@@ -511,7 +530,7 @@ const LedgerTab = () => {
               type="text"
               placeholder="Search by Hash, Index, or User ID..."
               value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
+              onChange={(e) => handleSearchChange(e.target.value)}
               className={`w-full py-2 pl-10 pr-4 border rounded-lg ${isDark ? 'bg-gray-800 border-gray-700 text-white' : 'bg-white border-gray-300 text-gray-900'}`}
           />
           <Search className={`absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 ${isDark ? 'text-gray-500' : 'text-gray-400'}`} />
@@ -525,18 +544,61 @@ const LedgerTab = () => {
         </div>
       ) : (
         <div className="space-y-4">
-          {filteredBlocks.map((block) => (
+          {filteredBlocks.length > 0 && (
+            <div className={`flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 text-sm ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
+              <span>
+                Showing blocks {((currentPage - 1) * PAGE_SIZE) + 1}–{Math.min(currentPage * PAGE_SIZE, filteredBlocks.length)} of <strong>{filteredBlocks.length}</strong> total
+                {invalidBlockIndices.size > 0 && (
+                  <span className="ml-2 text-red-500 font-semibold">
+                    · ⚠ {invalidBlockIndices.size} broken block{invalidBlockIndices.size > 1 ? 's' : ''}: #{[...invalidBlockIndices].sort((a,b)=>a-b).join(', #')}
+                  </span>
+                )}
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                  disabled={currentPage === 1}
+                  className={`px-3 py-1 rounded-lg text-xs font-semibold border transition-colors disabled:opacity-40 ${isDark ? 'border-gray-600 hover:bg-gray-700' : 'border-gray-300 hover:bg-gray-100'}`}
+                >← Prev</button>
+                <span className="text-xs">Page {currentPage} / {totalPages}</span>
+                <button
+                  onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                  disabled={currentPage === totalPages}
+                  className={`px-3 py-1 rounded-lg text-xs font-semibold border transition-colors disabled:opacity-40 ${isDark ? 'border-gray-600 hover:bg-gray-700' : 'border-gray-300 hover:bg-gray-100'}`}
+                >Next →</button>
+              </div>
+            </div>
+          )}
+
+          {paginatedBlocks.map((block) => {
+            const isBroken = invalidBlockIndices.has(block.index);
+            return (
             <div 
               key={block.id} 
-              className={`p-3 sm:p-4 rounded-xl shadow-sm border overflow-hidden ${isDark ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-100'}`}
+              className={`p-3 sm:p-4 rounded-xl shadow-sm border overflow-hidden transition-colors ${
+                isBroken
+                  ? isDark ? 'bg-red-900/30 border-red-600 ring-1 ring-red-500' : 'bg-red-50 border-red-400 ring-1 ring-red-400'
+                  : isDark ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-100'
+              }`}
             >
+              {isBroken && (
+                <div className={`flex items-center gap-2 mb-3 px-3 py-2 rounded-lg text-xs font-bold ${isDark ? 'bg-red-800/50 text-red-200' : 'bg-red-100 text-red-700'}`}>
+                  <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
+                  BROKEN / COMPROMISED — Hash chain is broken at this block. Run Repair Chain in the Blockchain tab.
+                </div>
+              )}
+
               <div className="flex justify-between items-start gap-2 min-w-0">
                   <div className="flex items-center gap-2 sm:gap-4 min-w-0 flex-1">
-                      <div className={`font-bold w-9 h-9 sm:w-10 sm:h-10 rounded-full flex items-center justify-center flex-shrink-0 ${isDark ? 'bg-indigo-900/50 text-indigo-300' : 'bg-indigo-50 text-indigo-700'}`}>
+                      <div className={`font-bold w-9 h-9 sm:w-10 sm:h-10 rounded-full flex items-center justify-center flex-shrink-0 ${
+                        isBroken
+                          ? isDark ? 'bg-red-800/60 text-red-300' : 'bg-red-200 text-red-700'
+                          : isDark ? 'bg-indigo-900/50 text-indigo-300' : 'bg-indigo-50 text-indigo-700'
+                      }`}>
                           <Box className='w-4 h-4 sm:w-5 sm:h-5'/>
                       </div>
                       <div className="min-w-0 flex-1">
-                          <div className={`font-semibold text-sm sm:text-base truncate ${isDark ? 'text-white' : 'text-gray-800'}`}>
+                          <div className={`font-semibold text-sm sm:text-base truncate ${isBroken ? isDark ? 'text-red-300' : 'text-red-700' : isDark ? 'text-white' : 'text-gray-800'}`}>
                               Block #{block.index} - {block.actionType}
                           </div>
                           <div className={`text-xs sm:text-sm mt-1 flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-4 ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
@@ -555,17 +617,20 @@ const LedgerTab = () => {
                       <div className={`font-bold text-base sm:text-xl ${block.points > 0 ? 'text-green-500' : block.points < 0 ? 'text-red-500' : 'text-gray-400'}`}>
                           {block.points > 0 ? `+${block.points}` : block.points} Pts
                       </div>
-                      <span className={`text-xs mt-1 px-2 py-0.5 rounded ${block.isValid === false ? 'bg-red-500 text-white' : isDark ? 'bg-gray-700 text-gray-300' : 'bg-gray-100 text-gray-600'}`}>
-                          {block.isValid === false ? 'INVALID' : 'VALID'}
+                      <span className={`text-xs mt-1 px-2 py-0.5 rounded ${
+                        isBroken || block.isValid === false
+                          ? 'bg-red-500 text-white'
+                          : isDark ? 'bg-gray-700 text-gray-300' : 'bg-gray-100 text-gray-600'
+                      }`}>
+                          {isBroken || block.isValid === false ? 'INVALID' : 'VALID'}
                       </span>
                   </div>
               </div>
 
-              {/* Hash Details */}
               <div className={`mt-3 pt-3 border-t overflow-hidden ${isDark ? 'border-gray-700' : 'border-gray-100'}`}>
                   <div className="text-xs mb-1 overflow-hidden">
                       <span className={`font-semibold ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>Hash:</span>
-                      <code className={`block break-all font-mono text-[11px] ${isDark ? "text-indigo-300" : "text-indigo-600"}`}>
+                      <code className={`block break-all font-mono text-[11px] ${isBroken ? isDark ? 'text-red-300' : 'text-red-600' : isDark ? "text-indigo-300" : "text-indigo-600"}`}>
                           {block.hash}
                       </code>
                   </div>
@@ -577,7 +642,6 @@ const LedgerTab = () => {
                   </div>
               </div>
 
-              {/* Metadata Toggle */}
               <button
                 onClick={() => setExpandedBlock(expandedBlock === block.id ? null : block.id)}
                 className={`text-xs font-medium mt-2 px-3 py-1 rounded-full border flex items-center gap-1 transition-colors ${
@@ -593,10 +657,8 @@ const LedgerTab = () => {
                 )}
               </button>
 
-              {/* Metadata Dropdown */}
               {expandedBlock === block.id && block.metadata && (
                   <div className="mt-2">
-                      {/* Explanation for initial status on submission blocks */}
                       {(block.actionType === 'WASTE_SUBMITTED' || block.actionType === 'REWARD_REDEEMED') && (
                           <div className={`p-3 mb-2 rounded-lg border-l-4 animate-in slide-in-from-top-2 fade-in ${isDark ? "bg-yellow-900/20 border-yellow-500 text-yellow-300" : "bg-yellow-50 border-yellow-500 text-yellow-800"}`}>
                               <p className="text-sm font-semibold flex items-center gap-2">
@@ -604,12 +666,10 @@ const LedgerTab = () => {
                                   Note on Status in Metadata
                               </p>
                               <p className="text-xs mt-1">
-                                  This block records an **immutable snapshot** of the submission's state (*e.g., `pending_approval`*) **at the moment of creation**. The subsequent approval/confirmation is recorded in a **later block** (the points transaction block) and in the live database, but this original record in the chain cannot be altered.
+                                  This block records an immutable snapshot of the submission's state at the moment of creation. The subsequent approval/confirmation is recorded in a later block and in the live database, but this original record cannot be altered.
                               </p>
                           </div>
                       )}
-
-                      {/* Existing Metadata Display */}
                       <div className={`p-3 rounded-lg grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2 text-xs border animate-in slide-in-from-top-2 fade-in ${
                         isDark ? "bg-black/20 border-gray-700" : "bg-gray-50 border-gray-100"
                       }`}>
@@ -623,14 +683,42 @@ const LedgerTab = () => {
                   </div>
               )}
             </div>
-          ))}
+            );
+          })}
+
+          {totalPages > 1 && (
+            <div className={`flex items-center justify-center gap-3 pt-2 text-sm ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
+              <button
+                onClick={() => setCurrentPage(1)}
+                disabled={currentPage === 1}
+                className={`px-3 py-1 rounded-lg text-xs font-semibold border transition-colors disabled:opacity-40 ${isDark ? 'border-gray-600 hover:bg-gray-700' : 'border-gray-300 hover:bg-gray-100'}`}
+              >« First</button>
+              <button
+                onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                disabled={currentPage === 1}
+                className={`px-3 py-1 rounded-lg text-xs font-semibold border transition-colors disabled:opacity-40 ${isDark ? 'border-gray-600 hover:bg-gray-700' : 'border-gray-300 hover:bg-gray-100'}`}
+              >← Prev</button>
+              <span className="text-xs">Page {currentPage} / {totalPages}</span>
+              <button
+                onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                disabled={currentPage === totalPages}
+                className={`px-3 py-1 rounded-lg text-xs font-semibold border transition-colors disabled:opacity-40 ${isDark ? 'border-gray-600 hover:bg-gray-700' : 'border-gray-300 hover:bg-gray-100'}`}
+              >Next →</button>
+              <button
+                onClick={() => setCurrentPage(totalPages)}
+                disabled={currentPage === totalPages}
+                className={`px-3 py-1 rounded-lg text-xs font-semibold border transition-colors disabled:opacity-40 ${isDark ? 'border-gray-600 hover:bg-gray-700' : 'border-gray-300 hover:bg-gray-100'}`}
+              >Last »</button>
+            </div>
+          )}
+
           {!loading && filteredBlocks.length === 0 && (
               <p className={`text-center py-10 ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>No matching blocks found.</p>
           )}
         </div>
       )}
 
-      {/* NEW: Educational Info Box */}
+      {/* Educational Info Box */}
       <div className={`mt-8 p-6 rounded-xl border-l-4 ${
         isDark ? "bg-blue-900/20 border-blue-500 text-blue-300" : "bg-blue-50 border-blue-500 text-blue-800"
       }`}>

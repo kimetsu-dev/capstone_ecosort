@@ -76,8 +76,12 @@ export const runIntelligenceEngine = ({
 
   const retentionScore = retentionStats.retentionRate;
 
-  // Forecast confidence: more trend data = higher score
-  const forecastScore = Math.min(100, (trendData.length / 30) * 100);
+  // Data depth score: more trend data + higher submission volume = better score
+  // Score = 100 at 30+ days with 30+ submissions. Scales down proportionally.
+  const totalSubs        = trendData.reduce((s, d) => s + d.submissions, 0);
+  const dataPointScore   = Math.min(100, (trendData.length / 30) * 100);
+  const volumeScore      = Math.min(100, (totalSubs / 30) * 100);
+  const forecastScore    = Math.round((dataPointScore + volumeScore) / 2);
 
   const healthScores = {
     participation: Math.round(Math.min(100, participationPct * 1.4)),  // 70% participation = 100 score
@@ -92,32 +96,39 @@ export const runIntelligenceEngine = ({
   // ══════════════════════════════════════════════════════════════════════════
 
   // Submission volume change week-over-week
+  // Minimum threshold: prior week must have ≥3 drop-offs to be a meaningful baseline.
+  // Without this, going from 1 → 3 submissions would show "+200%" which is misleading.
+  const WOW_MIN_BASE = 3;
   if (trendData.length >= 14) {
     const recent7 = trendData.slice(-7).reduce((s, d) => s + d.submissions, 0);
     const prior7  = trendData.slice(-14, -7).reduce((s, d) => s + d.submissions, 0);
-    const dropPct = prior7 > 0 ? ((prior7 - recent7) / prior7) * 100 : 0;
 
-    if (dropPct >= 30) {
-      alerts.push({
-        level: 'critical', icon: '📉',
-        title: 'Big drop in waste drop-offs this week',
-        message: `This week had ${recent7} drop-offs vs ${prior7} last week — a ${dropPct.toFixed(0)}% drop.`,
-        action: 'Send a push notification or post an announcement to remind members to drop off waste.',
-      });
-    } else if (dropPct >= 15) {
-      alerts.push({
-        level: 'warning', icon: '⚠️',
-        title: 'Drop-offs are slowing down',
-        message: `This week had ${dropPct.toFixed(0)}% fewer drop-offs than last week (${recent7} vs ${prior7}).`,
-        action: 'Monitor for another week. If it continues, consider a reminder or a new incentive.',
-      });
-    } else if (recent7 > prior7 * 1.2) {
-      alerts.push({
-        level: 'success', icon: '🚀',
-        title: 'Drop-offs jumped this week!',
-        message: `Activity increased by ${((recent7 / Math.max(prior7, 1) - 1) * 100).toFixed(0)}% this week (${recent7} vs ${prior7}).`,
-        action: 'Great time to post a community update or thank members publicly.',
-      });
+    if (prior7 >= WOW_MIN_BASE) {
+      const dropPct = ((prior7 - recent7) / prior7) * 100;
+      const risePct = ((recent7 - prior7) / prior7) * 100;
+
+      if (dropPct >= 30) {
+        alerts.push({
+          level: 'critical', icon: '📉',
+          title: 'Big drop in waste drop-offs this week',
+          message: `This week had ${recent7} drop-offs vs ${prior7} last week — a ${dropPct.toFixed(0)}% drop.`,
+          action: 'Send a push notification or post an announcement to remind members to drop off waste.',
+        });
+      } else if (dropPct >= 15) {
+        alerts.push({
+          level: 'warning', icon: '⚠️',
+          title: 'Drop-offs are slowing down',
+          message: `This week had ${dropPct.toFixed(0)}% fewer drop-offs than last week (${recent7} vs ${prior7}).`,
+          action: 'Monitor for another week. If it continues, consider a reminder or a new incentive.',
+        });
+      } else if (risePct >= 20) {
+        alerts.push({
+          level: 'success', icon: '🚀',
+          title: 'Drop-offs jumped this week!',
+          message: `Activity increased by ${risePct.toFixed(0)}% this week (${recent7} vs ${prior7} last week).`,
+          action: 'Great time to post a community update or thank members publicly.',
+        });
+      }
     }
   }
 
@@ -125,7 +136,8 @@ export const runIntelligenceEngine = ({
   if (kgTrendData.length >= 14 && kpi.hasWeightData) {
     const recentKg = kgTrendData.slice(-7).reduce((s, d) => s + (d.kg || 0), 0);
     const priorKg  = kgTrendData.slice(-14, -7).reduce((s, d) => s + (d.kg || 0), 0);
-    if (priorKg > 0) {
+    // Require at least 0.5 kg in the prior week to avoid inflated percentages
+    if (priorKg >= 0.5) {
       const dropPct = ((priorKg - recentKg) / priorKg) * 100;
       if (dropPct >= 30) {
         alerts.push({
@@ -138,7 +150,7 @@ export const runIntelligenceEngine = ({
         alerts.push({
           level: 'success', icon: '⚖️',
           title: 'More waste collected this week — nice!',
-          message: `This week: ${fmtKg(recentKg)} vs last week: ${fmtKg(priorKg)} — a ${(((recentKg/Math.max(priorKg,1))-1)*100).toFixed(0)}% increase in weight.`,
+          message: `This week: ${fmtKg(recentKg)} vs last week: ${fmtKg(priorKg)} — a ${(((recentKg / priorKg) - 1) * 100).toFixed(0)}% increase in weight.`,
           action: 'Great momentum! Share this milestone with your community.',
         });
       }
@@ -160,7 +172,7 @@ export const runIntelligenceEngine = ({
 
   // Inactive members who used to participate
   const inactiveWithPoints = users.filter(u =>
-    !activeIds.has(u.id) && (u.points || u.totalPoints || 0) > 0
+    !activeIds.has(u.id) && (u.totalPoints || 0) > 0
   ).length;
   if (inactiveWithPoints >= 3) {
     alerts.push({
@@ -351,13 +363,23 @@ export const runIntelligenceEngine = ({
   if (trendData.length >= 14) {
     const r7 = trendData.slice(-7).reduce((s, d) => s + d.submissions, 0);
     const p7 = trendData.slice(-14, -7).reduce((s, d) => s + d.submissions, 0);
-    if (p7 > 0) {
-      const change = ((r7 - p7) / p7 * 100).toFixed(0);
-      const isUp   = r7 >= p7;
+    // Only show % change when prior week had a meaningful baseline
+    if (p7 >= WOW_MIN_BASE) {
+      const rawChange = ((r7 - p7) / p7 * 100);
+      // Clamp to ±500% for display — beyond that the number is more confusing than informative
+      const change    = Math.max(-500, Math.min(500, rawChange)).toFixed(0);
+      const isUp      = r7 >= p7;
       insightFeed.push({
         icon: isUp ? '📈' : '📉',
-        title: `Week-over-week: ${change >= 0 ? '+' : ''}${change}%`,
+        title: `Week-over-week: ${Number(change) >= 0 ? '+' : ''}${change}%`,
         message: `Last 7 days had ${r7} drop-offs vs ${p7} the week before. At this pace, you can expect around ${Math.max(0, Math.round((r7 / 7) * 30))} drop-offs next month.`,
+      });
+    } else if (r7 > 0) {
+      // Prior week too low for %, just show raw counts
+      insightFeed.push({
+        icon: r7 >= p7 ? '📈' : '📉',
+        title: `This week: ${r7} drop-off${r7 !== 1 ? 's' : ''}`,
+        message: `${r7} drop-offs this week vs ${p7} last week. Not enough prior activity to show a reliable % change yet.`,
       });
     }
   }

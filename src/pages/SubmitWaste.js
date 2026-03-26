@@ -112,7 +112,7 @@ export default function SubmitWaste() {
   const [showHistory, setShowHistory] = useState(false);
   const [userSubmissions, setUserSubmissions] = useState([]);
   const [submissionsLoading, setSubmissionsLoading] = useState(true);
-  const [confirmDelete, setConfirmDelete] = useState({ show: false, id: null });
+  const [confirmDelete, setConfirmDelete] = useState({ show: false, id: null, type: null });
   const [deleting, setDeleting] = useState(false);
 
   // New Confirmation States
@@ -439,12 +439,30 @@ export default function SubmitWaste() {
     if (!confirmDelete.id) return;
     setDeleting(true);
     try {
-      await updateDoc(doc(db, "waste_submissions", confirmDelete.id), {
+      const cancellingId = confirmDelete.id;
+      const cancellingType = confirmDelete.type || "waste";
+
+      await updateDoc(doc(db, "waste_submissions", cancellingId), {
         status: "cancelled",
         cancelledAt: serverTimestamp(),
       });
+
+      // 📋 Write a point_transaction so the cancellation appears in transaction history
+      const user = auth.currentUser;
+      if (user) {
+        await addDoc(collection(db, "point_transactions"), {
+          userId: user.uid,
+          type: "submission_cancelled",
+          points: 0,
+          description: `Submission Cancelled – ${cancellingType.charAt(0).toUpperCase() + cancellingType.slice(1)} waste`,
+          submissionId: cancellingId,
+          category: "recycling",
+          timestamp: serverTimestamp(),
+        });
+      }
+
       showToast("Submission cancelled successfully.", "success");
-      setConfirmDelete({ show: false, id: null });
+      setConfirmDelete({ show: false, id: null, type: null });
     } catch (error) {
       console.error("Error cancelling submission:", error);
       showToast("Failed to cancel submission.", "error");
@@ -1127,7 +1145,7 @@ export default function SubmitWaste() {
                           </div>
                           {sub.status === 'pending' && (
                             <button
-                              onClick={(e) => { e.stopPropagation(); setConfirmDelete({ show: true, id: sub.id }); }}
+                              onClick={(e) => { e.stopPropagation(); setConfirmDelete({ show: true, id: sub.id, type: sub.type || "waste" }); }}
                               className="mt-1 text-xs flex items-center font-medium text-red-500 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-500/10 px-2 py-1.5 rounded transition-colors"
                             >
                               <Trash2 className="w-3.5 h-3.5 mr-1" />
@@ -1279,7 +1297,7 @@ export default function SubmitWaste() {
             </p>
             <div className="flex gap-3">
               <button
-                onClick={() => setConfirmDelete({ show: false, id: null })}
+                onClick={() => setConfirmDelete({ show: false, id: null, type: null })}
                 disabled={deleting}
                 className={`flex-1 py-2.5 rounded-xl font-medium transition-colors ${
                   isDark ? "bg-gray-700 hover:bg-gray-600 text-white" : "bg-gray-100 hover:bg-gray-200 text-gray-800"

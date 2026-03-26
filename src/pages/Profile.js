@@ -3,7 +3,7 @@ import { auth, db, storage } from "../firebase";
 import { Link, useNavigate } from "react-router-dom";
 import {
   updateProfile,
-  updateEmail,
+  verifyBeforeUpdateEmail,
   updatePassword,
   onAuthStateChanged,
   signOut,
@@ -205,7 +205,8 @@ export default function Profile() {
         await updateProfile(user, { displayName: username.trim() });
       }
       if (emailChanged) {
-        await updateEmail(user, email);
+        await verifyBeforeUpdateEmail(user, email);
+        alert("A verification email has been sent to " + email + ". Your email will update after you verify it.");
       }
       if (passwordChanging) {
         await updatePassword(user, password);
@@ -248,7 +249,11 @@ export default function Profile() {
         navigate("/");
       } catch (err) {
         console.error(err);
-        alert("Failed to delete account.");
+        if (err.code === "auth/requires-recent-login") {
+          alert("For security, please log out and log back in before deleting your account.");
+        } else {
+          alert("Failed to delete account: " + (err.message || err));
+        }
       }
     }
   };
@@ -305,7 +310,7 @@ export default function Profile() {
           <div className="flex items-center justify-between">
             {/* Back Button */}
             <Link
-              to="/home"
+              to="/dashboard"
               className={`group flex items-center space-x-2 px-4 py-2.5 rounded-xl font-semibold transition-all duration-300 hover:scale-105 active:scale-95 ${
                 isDark
                   ? "bg-gray-800/80 text-gray-200 hover:bg-gray-700/80 border border-gray-700/50"

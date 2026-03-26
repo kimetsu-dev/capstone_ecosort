@@ -40,3 +40,4 @@ if (typeof window !== "undefined" && process.env.NODE_ENV === "production") {
 
 export { messaging };
 export default app;
+window.db = db;

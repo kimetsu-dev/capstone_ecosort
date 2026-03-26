@@ -21,6 +21,17 @@ import { createBlockHash } from './blockchainService';
  * TRACKER RECONCILIATION: Before writing, we verify the tracker's latestHash matches
  * the actual latest block in the ledger. If they diverge (e.g. a prior write failed
  * mid-way), we use the real chain as source of truth. This prevents chain breaks.
+ *
+ * TAMPER COVERAGE — TRANSACTION POINTS:
+ * To detect direct edits to the `points` field on a `point_transaction` document
+ * (e.g. changing a submission reward or redemption cost after the fact in Firestore),
+ * we always seal `metadata.txPoints` = the original `points` value at write-time.
+ * This value is folded into the block hash, so any later mismatch between the live
+ * `point_transaction.points` and `metadata.txPoints` is detectable by
+ * `verifyTransactionPointsTampering()` in blockchainService.js.
+ *
+ * IMPORTANT: metadata.txPoints is always set here unconditionally from the canonical
+ * `points` argument — any caller-supplied txPoints is overwritten to prevent spoofing.
  */
 export const addToLedger = async (userId, actionType, points, metadata = {}) => {
   const ledgerRef = collection(db, "ledger");
@@ -42,8 +53,16 @@ export const addToLedger = async (userId, actionType, points, metadata = {}) => 
 
       // 2. Create the payload for the new block
       const timestamp = new Date().toISOString();
+
+      // 3. Seal the original point value into metadata so it is covered by the hash.
+      //    This is the source of truth for detecting tampered point_transaction docs.
+      //    We always overwrite any caller-supplied txPoints to prevent spoofing.
+      const sealedMetadata = {
+        ...metadata,
+        txPoints: typeof points === 'number' ? points : 0,
+      };
       
-      // 3. Generate the Hash (The Fingerprint) using the standard function
+      // 4. Generate the Hash (The Fingerprint) using the standard function
       const newBlockData = {
         index,
         prevHash,
@@ -51,12 +70,12 @@ export const addToLedger = async (userId, actionType, points, metadata = {}) => 
         userId,
         actionType,
         points,
-        metadata
+        metadata: sealedMetadata,
       };
 
       const currentHash = createBlockHash(newBlockData);
 
-      // 4. Create the Block Object
+      // 5. Create the Block Object
       const newBlock = {
         ...newBlockData,
         createdAt: serverTimestamp(), // Firestore sorting
@@ -64,7 +83,7 @@ export const addToLedger = async (userId, actionType, points, metadata = {}) => 
         isValid: true 
       };
 
-      // 5. Write to Firestore
+      // 6. Write to Firestore
       const newBlockRef = doc(ledgerRef); // Auto-ID
       transaction.set(newBlockRef, newBlock);
       
@@ -85,14 +104,50 @@ export const addToLedger = async (userId, actionType, points, metadata = {}) => 
 };
 
 /**
- * Fetch the ledger chain for the Admin Panel or visualizer.
- * Fetches the last 100 blocks ordered by index descending (newest first).
+ * Fetch the full ledger chain for the Admin Panel or visualizer.
+ *
+ * FIX: Removed the limit(100) cap that previously caused verifyChainIntegrity()
+ * to receive a partial chain and report false "broken" results for chains longer
+ * than 100 blocks — even after a successful repair in the Blockchain tab.
+ *
+ * Uses cursor-based pagination (500 blocks per page) so chains of any length
+ * are fully fetched, matching the approach used by verifyBlockchain() in
+ * blockchainService.js.
  */
 export const getLedgerChain = async () => {
   try {
-    const q = query(collection(db, "ledger"), orderBy("index", "desc"), limit(100));
-    const snapshot = await getDocs(q);
-    return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    const PAGE_SIZE = 500;
+    let allBlocks = [];
+    let lastVisible = null;
+    let keepFetching = true;
+
+    while (keepFetching) {
+      let q;
+      if (lastVisible) {
+        const { startAfter } = await import('firebase/firestore');
+        q = query(
+          collection(db, "ledger"),
+          orderBy("index", "desc"),
+          startAfter(lastVisible),
+          limit(PAGE_SIZE)
+        );
+      } else {
+        q = query(
+          collection(db, "ledger"),
+          orderBy("index", "desc"),
+          limit(PAGE_SIZE)
+        );
+      }
+
+      const snapshot = await getDocs(q);
+      if (snapshot.empty) break;
+
+      allBlocks.push(...snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
+      lastVisible = snapshot.docs[snapshot.docs.length - 1];
+      if (snapshot.docs.length < PAGE_SIZE) keepFetching = false;
+    }
+
+    return allBlocks;
   } catch (e) {
     console.error("Error fetching ledger:", e);
     return [];
@@ -100,7 +155,17 @@ export const getLedgerChain = async () => {
 };
 
 /**
- * Utility to verify the integrity of the chain manually on the client side.
+ * Verifies the integrity of the chain from raw block data passed in.
+ *
+ * NOTE: This function is intentionally kept for external callers that already
+ * hold a full chain snapshot (e.g. export utilities). It must NOT be called
+ * with a partial/paginated subset of the chain — doing so will always produce
+ * false "broken link" results because the prevHash of the first block in the
+ * subset won't match any block in the window.
+ *
+ * For all integrity checks inside the Admin Panel, use runAllIntegrityChecks()
+ * from blockchainService.js instead — it fetches the full chain fresh from
+ * Firestore with pagination and is the single source of truth for chain health.
  */
 export const verifyChainIntegrity = (chainData) => {
     if (!chainData || chainData.length === 0) return true;

@@ -33,6 +33,7 @@ import Leaderboard from "./pages/Leaderboard";
 import MyRedemptions from "./pages/MyRedemptions";
 import Settings from "./pages/Settings";
 import PublicVerification from "./pages/PublicVerification";
+import Support from "./pages/Support";
 
 /* ---------------- INSTALLATION INSTRUCTIONS MODAL ---------------- */
 const InstallInstructionsModal = ({ isOpen, onClose, osType }) => {
@@ -591,13 +592,25 @@ const RouteGuard = ({ children, requireAuth = false, adminOnly = false, publicOn
     return <LoadingSpinner />;
   }
 
-  // Public only routes (redirect authenticated users)
-  if (publicOnly && currentUser) {
+  // A user is considered "verified" if they have a currentUser at all.
+  // Login.js enforces the emailVerified check for NEW users (no Firestore doc),
+  // so any currentUser that exists here is either:
+  //   1. Email-verified (new users post-enforcement)
+  //   2. A Google user (always verified by Google)
+  //   3. A pre-existing user created before verification was enforced
+  // All three are legitimate and should be treated as authenticated.
+  const isVerifiedUser = !!currentUser;
+
+  // Public only routes — only redirect users who are actually verified
+  if (publicOnly && isVerifiedUser) {
     const redirectPath = isAdmin ? "/adminpanel" : "/dashboard";
     return <Navigate to={redirectPath} replace />;
   }
 
-  // Auth required routes
+  // Auth required routes — block unauthenticated users, but let existing
+  // unverified users (pre-verification-enforcement) through if they are logged in.
+  // New unverified email signups are signed out immediately in Signup.js so
+  // they will have no currentUser here anyway.
   if (requireAuth && !currentUser) {
     return <Navigate to="/welcome" replace />;
   }
@@ -789,6 +802,10 @@ const ThemedAppWrapper = () => {
                 <Settings />
               </RouteGuard>
             }
+          />
+          <Route
+            path="/support"
+            element={<Support />}
           />
 
           {/* Admin Protected Routes */}

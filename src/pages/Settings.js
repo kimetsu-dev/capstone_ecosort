@@ -3,7 +3,7 @@ import { useNavigate, useLocation } from "react-router-dom";
 import { useTheme } from "../contexts/ThemeContext";
 import { useLanguage } from "../contexts/LanguageContext"; 
 
-import { FiArrowLeft, FiSettings, FiLogOut, FiGlobe } from "react-icons/fi"; 
+import { FiArrowLeft, FiSettings, FiLogOut, FiGlobe, FiLifeBuoy } from "react-icons/fi";
 import { FaPalette } from "react-icons/fa";
 
 import { auth } from "../firebase";
@@ -55,6 +55,22 @@ export default function Settings() {
           onChange: (val) => setTheme(val),
           color: "from-purple-500 to-indigo-600",
           icon: FiSettings,
+        },
+      ],
+    },
+    {
+      id: "support",
+      title: "Help & Support",
+      icon: FiLifeBuoy,
+      items: [
+        {
+          id: "support_link",
+          title: "Help & Support",
+          subtitle: "FAQs, contact us, known issues, and track your tickets",
+          type: "link",
+          href: "/support",
+          color: "from-emerald-500 to-teal-600",
+          icon: FiLifeBuoy,
         },
       ],
     },
@@ -156,11 +172,14 @@ export default function Settings() {
                       return (
                         <div
                           key={item.id}
+                          onClick={item.type === "link" ? () => navigate(item.href) : undefined}
                           className={`p-4 sm:p-5 ${
                             theme === "dark"
                               ? "bg-white/5 hover:bg-white/10 border-white/10"
                               : "bg-white/50 hover:bg-white/80 border-black/10"
-                          } rounded-2xl border backdrop-blur-sm transition-all duration-300 hover:scale-[1.02] group`}
+                          } rounded-2xl border backdrop-blur-sm transition-all duration-300 hover:scale-[1.02] group${
+                            item.type === "link" ? " cursor-pointer" : ""
+                          }`}
                         >
                           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
                             <div className="flex items-center gap-4">
@@ -208,6 +227,13 @@ export default function Settings() {
                                     </option>
                                   ))}
                                 </select>
+                              )}
+                              {item.type === "link" && (
+                                <span className={`text-sm font-semibold ${
+                                  theme === "dark" ? "text-emerald-400" : "text-emerald-600"
+                                }`}>
+                                  Open →
+                                </span>
                               )}
                             </div>
                           </div>

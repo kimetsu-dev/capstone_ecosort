@@ -470,8 +470,12 @@ export const ForecastChart = ({
         <line x1={lastPt.x} y1={lastPt.y} x2={fcastX} y2={fcastY}
           stroke="#8b5cf6" strokeWidth="2" strokeDasharray="6,4" />
         <circle cx={fcastX} cy={fcastY} r="6" fill="#8b5cf6" stroke="white" strokeWidth="2" />
-        <text x={fcastX + 10} y={fcastY + 4} fontSize="11" fill="#8b5cf6" fontWeight="bold">
+        {/* Keep label left of dot if near right edge */}
+        <text x={fcastX + 10} y={fcastY - 4} fontSize="10" fill="#8b5cf6" fontWeight="bold">
           ~{fmtNum(Math.round(fcastDay))}/day
+        </text>
+        <text x={fcastX + 10} y={fcastY + 8} fontSize="9" fill="#8b5cf6" opacity="0.7">
+          (avg daily)
         </text>
 
         {histPts.map((p, i) => (
@@ -563,8 +567,9 @@ export const VelocityChart = ({ rewards = [] }) => {
       </div>
 
       {rewards.map((r, i) => {
-        const isPos = r.velocityPct >= 0;
-        const barW  = Math.min(48, (Math.abs(r.velocityPct) / maxAbs) * 48);
+        const isPos    = r.velocityPct >= 0;
+        const barW     = Math.min(48, (Math.abs(r.velocityPct) / maxAbs) * 48);
+        const noData   = r.velocityPct === 0 && r.confidence === 'Low';
         return (
           <div key={r.rewardName} className="flex items-center gap-1.5"
             onMouseEnter={() => setHovered(i)} onMouseLeave={() => setHovered(null)}>
@@ -577,7 +582,7 @@ export const VelocityChart = ({ rewards = [] }) => {
             <div className="flex-1 flex items-center h-6">
               {/* Left (negative) half */}
               <div className="w-1/2 flex justify-end h-full items-center">
-                {!isPos
+                {!isPos && !noData
                   ? <div className="h-3.5 rounded-l-full transition-all duration-300"
                       style={{ width: `${barW * 2}%`, background: hovered === i ? '#ef4444' : '#fca5a5' }} />
                   : <div className="h-3.5 bg-gray-100 rounded-l-full w-full" />
@@ -586,7 +591,7 @@ export const VelocityChart = ({ rewards = [] }) => {
               <div className="w-px h-4 bg-gray-300 shrink-0" />
               {/* Right (positive) half */}
               <div className="w-1/2 flex justify-start h-full items-center">
-                {isPos
+                {isPos && !noData
                   ? <div className="h-3.5 rounded-r-full transition-all duration-300"
                       style={{ width: `${barW * 2}%`, background: hovered === i ? '#10b981' : '#6ee7b7' }} />
                   : <div className="h-3.5 bg-gray-100 rounded-r-full w-full" />
@@ -594,16 +599,17 @@ export const VelocityChart = ({ rewards = [] }) => {
               </div>
             </div>
 
-            <span className={`text-[10px] sm:text-[11px] font-bold shrink-0 text-right ${isPos ? 'text-emerald-600' : 'text-rose-500'}`}
-              style={{ width: '13%' }}>
-              {isPos ? '+' : ''}{r.velocityPct}%
+            <span className={`text-[10px] sm:text-[11px] font-bold shrink-0 text-right ${
+              noData ? 'text-gray-400' : isPos ? 'text-emerald-600' : 'text-rose-500'
+            }`} style={{ width: '16%' }}>
+              {noData ? 'low data' : `${isPos ? '+' : ''}${r.velocityPct}%`}
             </span>
           </div>
         );
       })}
 
       <p className="text-[10px] sm:text-[11px] text-gray-400 pt-1">
-        Green = gaining popularity, red = losing it. Based on the last 4 weeks vs the 4 before that.
+        Green = gaining popularity, red = losing it. "low data" = not enough history for a reliable trend. Based on last 4 weeks vs the 4 before.
       </p>
     </div>
   );

@@ -461,12 +461,24 @@ export default function Welcome() {
 
             <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
               <button
+                onClick={() => navigate('/support')}
+                className={`hidden sm:flex items-center gap-1.5 px-3 py-2 sm:px-4 sm:py-2 rounded-lg sm:rounded-xl font-medium border transition-all duration-200 text-xs sm:text-sm whitespace-nowrap ${
+                  isDark
+                    ? 'border-gray-600 text-gray-300 bg-slate-800 hover:bg-slate-700 hover:shadow-md'
+                    : 'border-gray-200 text-gray-600 bg-white hover:bg-gray-50 hover:shadow-md'
+                }`}
+              >
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18.364 5.636l-3.536 3.536m0 5.656l3.536 3.536M9.172 9.172L5.636 5.636m3.536 9.192l-3.536 3.536M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-5 0a4 4 0 11-8 0 4 4 0 018 0z" />
+                </svg>
+                Help
+              </button>
+              <button
                 onClick={() => navigate('/signup')}
                 className="group bg-emerald-500 text-white rounded-lg sm:rounded-xl font-medium shadow-md hover:shadow-lg hover:bg-emerald-600 transition-all duration-200 px-3 py-2 sm:px-4 sm:py-2 text-xs sm:text-sm flex items-center justify-center gap-1 sm:gap-2 whitespace-nowrap"
               >
                 <span className="hidden xs:inline">Sign Up</span>
                 <span className="xs:hidden">Sign Up</span>
-    
               </button>
               <button
                 onClick={() => navigate('/login')}
@@ -571,6 +583,37 @@ export default function Welcome() {
               );
             })}
           </div>
+
+          {/* Help & Support Banner */}
+          <div className={`mt-8 sm:mt-12 rounded-2xl sm:rounded-3xl p-5 sm:p-8 flex flex-col sm:flex-row items-center justify-between gap-4 sm:gap-6 ${
+            isDark
+              ? 'bg-slate-800/70 border border-slate-600/30'
+              : 'bg-white/70 border border-gray-200/50'
+          } shadow-lg`}>
+            <div className="flex items-center gap-4 text-center sm:text-left">
+              <div className="w-12 h-12 sm:w-14 sm:h-14 bg-gradient-to-br from-emerald-500 to-teal-600 rounded-xl sm:rounded-2xl flex items-center justify-center shadow-md flex-shrink-0">
+                <svg className="w-6 h-6 sm:w-7 sm:h-7 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M18.364 5.636l-3.536 3.536m0 5.656l3.536 3.536M9.172 9.172L5.636 5.636m3.536 9.192l-3.536 3.536M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-5 0a4 4 0 11-8 0 4 4 0 018 0z" />
+                </svg>
+              </div>
+              <div>
+                <h3 className={`text-base sm:text-lg font-bold ${styles.text.primary}`}>Need Help?</h3>
+                <p className={`text-xs sm:text-sm ${styles.text.secondary}`}>
+                  Browse FAQs, check known issues, or contact our support team.
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={() => navigate('/support')}
+              className="flex-shrink-0 flex items-center gap-2 px-5 py-2.5 sm:px-6 sm:py-3 bg-gradient-to-r from-emerald-500 to-teal-600 text-white rounded-xl font-semibold text-sm shadow-md hover:shadow-lg hover:from-emerald-600 hover:to-teal-700 transition-all duration-200 transform hover:-translate-y-0.5"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              Help & Support
+            </button>
+          </div>
+
         </div>
       </section>
 
@@ -684,7 +727,15 @@ export default function Welcome() {
                   <span className="text-green-400">📱</span>
                   <span>Mobile app available</span>
                 </div>
-                
+                <div className="flex items-center gap-2 sm:gap-3">
+                  <span className="text-teal-400">🛠️</span>
+                  <button
+                    onClick={() => navigate('/support')}
+                    className="text-teal-400 hover:text-teal-300 underline underline-offset-2 transition-colors text-xs sm:text-sm font-medium"
+                  >
+                    Help & Support
+                  </button>
+                </div>
               </div>
             </div>
           </div>

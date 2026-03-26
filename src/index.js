@@ -37,15 +37,13 @@ if (!rootElement) {
 const root = ReactDOM.createRoot(rootElement);
 
 root.render(
-  <React.StrictMode>
-    <ThemeProvider>
-      <AuthProvider>
-        <UserProvider>
-          <App />
-        </UserProvider>
-      </AuthProvider>
-    </ThemeProvider>
-  </React.StrictMode>
+  <ThemeProvider>
+    <AuthProvider>
+      <UserProvider>
+        <App />
+      </UserProvider>
+    </AuthProvider>
+  </ThemeProvider>
 );
 
 // ✅ Enhanced service worker registration with auto-update support
