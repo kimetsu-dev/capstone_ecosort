@@ -314,8 +314,38 @@ export default function NotificationCenter({ userId = "demo-user" }) {
         return <FiDollarSign className={`${iconClass} text-blue-500`} />;
       case "redemption":
         return <FiGift className={`${iconClass} text-purple-500`} />;
+      case "redemption_confirmed":
+        return (
+          <div className="w-8 h-8 rounded-lg bg-purple-100 dark:bg-purple-900/30 flex items-center justify-center flex-shrink-0">
+            <FiGift className="w-4 h-4 text-purple-600 dark:text-purple-400" />
+          </div>
+        );
+      case "redemption_rejected":
+        return (
+          <div className="w-8 h-8 rounded-lg bg-red-100 dark:bg-red-900/30 flex items-center justify-center flex-shrink-0">
+            <FiAlertCircle className="w-4 h-4 text-red-600 dark:text-red-400" />
+          </div>
+        );
+      case "redemption_cancelled":
+        return (
+          <div className="w-8 h-8 rounded-lg bg-gray-100 dark:bg-gray-800 flex items-center justify-center flex-shrink-0">
+            <FiX className="w-4 h-4 text-gray-500 dark:text-gray-400" />
+          </div>
+        );
       case "waste_submission":
         return <FiTrash className={`${iconClass} text-green-500`} />;
+      case "submission_approved":
+        return (
+          <div className="w-8 h-8 rounded-lg bg-green-100 dark:bg-green-900/30 flex items-center justify-center flex-shrink-0">
+            <FiCheckCircle className="w-4 h-4 text-green-600 dark:text-green-400" />
+          </div>
+        );
+      case "submission_rejected":
+        return (
+          <div className="w-8 h-8 rounded-lg bg-red-100 dark:bg-red-900/30 flex items-center justify-center flex-shrink-0">
+            <FiAlertCircle className="w-4 h-4 text-red-600 dark:text-red-400" />
+          </div>
+        );
       default:
         return <FiBell className={`${iconClass} text-gray-500`} />;
     }

@@ -11,12 +11,8 @@ import { ThemeProvider } from "./contexts/ThemeContext";
 import { isSupported } from "firebase/messaging";
 
 async function registerFirebaseMessagingSW() {
-  // Only try in production
-  if (process.env.NODE_ENV !== "production") {
-    console.log("🚧 Skipping Firebase Messaging service worker in development.");
-    return;
-  }
-
+  // Allow in both production AND development so you can test push notifications locally.
+  // In production this is required for background push to work.
   if (await isSupported()) {
     try {
       await navigator.serviceWorker.register("/firebase-messaging-sw.js");

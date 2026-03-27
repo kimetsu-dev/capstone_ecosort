@@ -303,7 +303,9 @@ export function DashboardCalendar({
   today.setHours(0, 0, 0, 0);
 
   const [showPopup,  setShowPopup]  = useState(false);
-  const [anchorDate, setAnchorDate] = useState(new Date(today));
+  const [anchorDate, setAnchorDate] = useState(() => {
+    const d = new Date(today); d.setDate(1); return d;
+  });
   const [selectedDateSchedules, setSelectedDateSchedules] = useState([]);
   const popupRef = useRef(null);
 
@@ -348,58 +350,49 @@ export function DashboardCalendar({
   useScrollLock(showPopup);
   usePopupClose(showPopup, popupRef, close);
 
-  // 7-day strip
-  const startOfWeek = (d) => {
-    const s = new Date(d);
-    s.setDate(s.getDate() - s.getDay() + 1); // Mon start
-    s.setHours(0, 0, 0, 0);
-    return s;
-  };
-  const wStart = startOfWeek(anchorDate);
-  const days   = Array.from({ length: 7 }, (_, i) => {
-    const d = new Date(wStart); d.setDate(wStart.getDate() + i); return d;
-  });
+  // Monthly grid (replaces 7-day week strip)
+  const year          = anchorDate.getFullYear();
+  const month         = anchorDate.getMonth();
+  const firstDayOfMonth = new Date(year, month, 1).getDay();
+  const daysInMonth   = new Date(year, month + 1, 0).getDate();
+  const blanks        = Array(firstDayOfMonth).fill(null);
+  const dayCells      = Array.from({ length: daysInMonth }, (_, i) => new Date(year, month, i + 1));
+  const cells         = [...blanks, ...dayCells];
+  while (cells.length % 7 !== 0) cells.push(null);
 
-  const prevWeek = () => { const d = new Date(anchorDate); d.setDate(d.getDate() - 7); setAnchorDate(d); };
-  const nextWeek = () => { const d = new Date(anchorDate); d.setDate(d.getDate() + 7); setAnchorDate(d); };
+  const prevMonth = () => setAnchorDate(new Date(year, month - 1, 1));
+  const nextMonth = () => setAnchorDate(new Date(year, month + 1, 1));
 
   const handleDay = (date) => {
+    if (!date) return;
     setSelectedDate(date);
     setSelectedDateSchedules(schedules.filter((s) => isScheduledForDate(date, s)));
   };
 
-  const monthLabel = (() => {
-    const s = days[0], e = days[6];
-    return s.getMonth() === e.getMonth()
-      ? s.toLocaleDateString("en-US", { month: "long", year: "numeric" })
-      : `${s.toLocaleDateString("en-US", { month: "short" })} – ${e.toLocaleDateString("en-US", { month: "short", year: "numeric" })}`;
-  })();
-
-  const DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+  const monthLabel  = anchorDate.toLocaleDateString("en-US", { month: "long", year: "numeric" });
+  const DAY_LABELS  = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
   return (
     <>
       {/* ── Icon button ── */}
       <button
         onClick={toggle}
-        className={`flex flex-col items-center gap-0.5 px-3 py-2 rounded-xl shadow-md transition-all active:scale-95 ${
+        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl shadow-sm transition-all active:scale-95 ${
           showPopup
             ? isDark ? "bg-emerald-700 text-white" : "bg-emerald-600 text-white"
             : isDark ? "bg-emerald-600 hover:bg-emerald-700 text-white" : "bg-emerald-500 hover:bg-emerald-600 text-white"
         }`}
-        aria-label={showPopup ? "Close calendar" : "Open calendar"}
+        aria-label={showPopup ? "Close calendar" : "View calendar"}
       >
-        <FiCalendar className="w-4 h-4" />
-        <span className="text-[10px] font-semibold leading-none">
-          {showPopup ? "Close" : "Open"}
-        </span>
+        <FiCalendar className="w-3.5 h-3.5" />
+        <span className="text-xs font-bold">{showPopup ? "Close" : "View Calendar"}</span>
       </button>
 
       {/* ── Portal popup ── */}
       {showPopup && createPortal(
-        <div className="fixed inset-0 z-[10000] flex items-start justify-center pt-16 px-4">
+        <div className="fixed inset-0 z-[10000] flex items-start justify-center pt-14 px-4 pb-8 overflow-y-auto">
           {/* Backdrop */}
-          <div className="absolute inset-0 bg-black/30 backdrop-blur-sm" onClick={close} />
+          <div className="fixed inset-0 bg-black/30 backdrop-blur-sm" onClick={close} />
 
           {/* Card */}
           <div
@@ -443,71 +436,93 @@ export function DashboardCalendar({
 
             {/* Body */}
             <div className="p-5">
-              {/* Week nav */}
-              <div className="flex items-center justify-between mb-3">
-                <span className={`text-sm font-bold ${isDark ? "text-gray-200" : "text-gray-800"}`}>{monthLabel}</span>
-                <div className="flex items-center gap-1">
-                  <button onClick={prevWeek} className={`w-7 h-7 rounded-full flex items-center justify-center transition-colors ${isDark ? "hover:bg-gray-700 text-gray-400" : "hover:bg-gray-100 text-gray-500"}`} aria-label="Previous week">
-                    <FiChevronLeft className="w-3.5 h-3.5" />
-                  </button>
+              {/* Month nav */}
+              <div className="flex items-center justify-between mb-4">
+                <button onClick={prevMonth} className={`w-8 h-8 rounded-full flex items-center justify-center transition-colors ${isDark ? "hover:bg-gray-700 text-gray-400" : "hover:bg-gray-100 text-gray-500"}`} aria-label="Previous month">
+                  <FiChevronLeft className="w-4 h-4" />
+                </button>
+                <div className="flex items-center gap-3">
+                  <span className={`text-base font-bold ${isDark ? "text-gray-100" : "text-gray-800"}`}>{monthLabel}</span>
                   <button
-                    onClick={() => { setAnchorDate(new Date(today)); handleDay(new Date(today)); }}
-                    className={`text-[10px] font-bold px-2 py-0.5 rounded-full transition-colors ${
+                    onClick={() => {
+                      const now = new Date();
+                      setAnchorDate(new Date(now.getFullYear(), now.getMonth(), 1));
+                      handleDay(new Date());
+                    }}
+                    className={`text-[10px] font-bold px-2.5 py-1 rounded-full transition-colors ${
                       isDark ? "bg-emerald-900/40 text-emerald-400 hover:bg-emerald-900/60" : "bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
                     }`}
                   >Today</button>
-                  <button onClick={nextWeek} className={`w-7 h-7 rounded-full flex items-center justify-center transition-colors ${isDark ? "hover:bg-gray-700 text-gray-400" : "hover:bg-gray-100 text-gray-500"}`} aria-label="Next week">
-                    <FiChevronRight className="w-3.5 h-3.5" />
-                  </button>
                 </div>
+                <button onClick={nextMonth} className={`w-8 h-8 rounded-full flex items-center justify-center transition-colors ${isDark ? "hover:bg-gray-700 text-gray-400" : "hover:bg-gray-100 text-gray-500"}`} aria-label="Next month">
+                  <FiChevronRight className="w-4 h-4" />
+                </button>
               </div>
 
-              {/* Day strip */}
-              <div className="grid grid-cols-7 gap-1">
-                {days.map((date, i) => {
-                  const isToday    = isSameDay(date, today);
+              {/* Weekday headers */}
+              <div className="grid grid-cols-7 mb-1">
+                {DAY_LABELS.map((label) => (
+                  <div key={label} className={`text-center text-[10px] font-semibold py-1.5 ${isDark ? "text-gray-500" : "text-gray-400"}`}>
+                    {label}
+                  </div>
+                ))}
+              </div>
+
+              {/* Day grid */}
+              <div className="grid grid-cols-7 gap-0.5">
+                {cells.map((date, i) => {
+                  if (!date) return <div key={`blank-${i}`} className="aspect-square" />;
+                  const isToday_   = isSameDay(date, today);
                   const isSelected = selectedDate && isSameDay(date, selectedDate);
+                  const isPast     = date < today;
                   const col        = hasCol(date);
                   const sub        = hasSub(date);
-                  const isPast     = date < today;
+                  const hasBoth    = col && sub;
                   return (
                     <button
                       key={i}
-                      onClick={() => handleDay(date)}
+                      onClick={() => { if (!isPast) handleDay(new Date(date)); }}
                       disabled={isPast}
-                      className={`flex flex-col items-center py-2 rounded-xl transition-all ${
-                        isSelected
-                          ? "bg-emerald-500 text-white shadow-md shadow-emerald-500/30"
-                          : isToday
-                          ? isDark ? "bg-amber-900/40 border border-amber-600/60" : "bg-amber-50 border border-amber-300"
-                          : isDark ? "hover:bg-gray-700/60" : "hover:bg-gray-50"
-                      } ${isPast ? "opacity-35 cursor-not-allowed" : "cursor-pointer"}`}
+                      className={`
+                        relative aspect-square flex flex-col items-center justify-center rounded-xl
+                        text-sm font-semibold transition-all duration-150
+                        ${isSelected
+                          ? "bg-emerald-500 text-white shadow-lg shadow-emerald-500/30 scale-105"
+                          : isToday_
+                          ? isDark ? "bg-amber-900/50 text-amber-300 border border-amber-600/60" : "bg-amber-50 text-amber-700 border border-amber-300"
+                          : isPast
+                          ? isDark ? "text-gray-700" : "text-gray-300"
+                          : isDark ? "text-gray-200 hover:bg-gray-700/60" : "text-gray-700 hover:bg-gray-100"
+                        }
+                        ${isPast ? "cursor-not-allowed" : "cursor-pointer"}
+                      `}
+                      aria-label={`${date.toLocaleDateString()}${col ? " – Collection" : ""}${sub ? " – Submission" : ""}`}
                     >
-                      <span className={`text-[10px] font-semibold mb-0.5 ${
-                        isSelected ? "text-emerald-100"
-                        : isToday ? isDark ? "text-amber-400" : "text-amber-600"
-                        : isDark ? "text-gray-500" : "text-gray-400"
-                      }`}>{DAY_LABELS[i]}</span>
-                      <span className={`text-sm font-bold leading-none ${
-                        isSelected ? "text-white"
-                        : isToday ? isDark ? "text-amber-300" : "text-amber-700"
-                        : isPast ? isDark ? "text-gray-600" : "text-gray-300"
-                        : isDark ? "text-gray-200" : "text-gray-800"
-                      }`}>{date.getDate()}</span>
-                      <div className="flex gap-0.5 mt-1 h-1.5">
-                        {col && <span className={`w-1.5 h-1.5 rounded-full ${isSelected ? "bg-white" : "bg-blue-500"}`} />}
-                        {sub && <span className={`w-1.5 h-1.5 rounded-full ${isSelected ? "bg-emerald-100" : "bg-green-500"}`} />}
-                      </div>
+                      <span className="leading-none">{date.getDate()}</span>
+                      {(col || sub) && (
+                        <div className="flex gap-0.5 mt-1 absolute bottom-1.5">
+                          {hasBoth ? (
+                            <>
+                              <span className={`w-1.5 h-1.5 rounded-full ${isSelected ? "bg-white" : "bg-blue-500"}`} />
+                              <span className={`w-1.5 h-1.5 rounded-full ${isSelected ? "bg-emerald-100" : "bg-green-500"}`} />
+                            </>
+                          ) : col ? (
+                            <span className={`w-1.5 h-1.5 rounded-full ${isSelected ? "bg-white" : "bg-blue-500"}`} />
+                          ) : (
+                            <span className={`w-1.5 h-1.5 rounded-full ${isSelected ? "bg-emerald-100" : "bg-green-500"}`} />
+                          )}
+                        </div>
+                      )}
                     </button>
                   );
                 })}
               </div>
 
-              {/* Detail */}
+              {/* Selected day detail */}
               {selectedDate && selectedDateSchedules.length > 0 && (
                 <div className={`mt-4 rounded-xl border p-3 space-y-2 ${isDark ? "bg-gray-800/60 border-gray-700" : "bg-gray-50 border-gray-200"}`}>
-                  <p className={`text-xs font-semibold ${isDark ? "text-gray-300" : "text-gray-600"}`}>
-                    {selectedDate.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" })}
+                  <p className={`text-xs font-bold ${isDark ? "text-gray-300" : "text-gray-600"}`}>
+                    {selectedDate.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}
                   </p>
                   {selectedDateSchedules.map((s, idx) => (
                     <ScheduleCard key={s.id || idx} s={s} selectedDate={selectedDate} isDark={isDark} />

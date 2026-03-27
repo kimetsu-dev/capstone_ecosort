@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from "react";
 import { auth, db } from "../firebase";
+import { removeTokenFromFirestore } from "../firebase-messaging";
 import {
   onAuthStateChanged,
   signInWithEmailAndPassword,
@@ -89,10 +90,11 @@ export const AuthProvider = ({ children }) => {
   // Logout user
   const logOut = async () => {
     try {
-      // Do NOT set loading: true here — it causes RouteGuard to render
-      // <LoadingSpinner> and unmount all page components, which kills active
-      // Firestore listeners before they have a chance to clean up properly.
-      // The onAuthStateChanged listener above will handle resetting state.
+      // Remove this device's FCM token from Firestore before signing out,
+      // so the user stops receiving push notifications on this device.
+      if (currentUser?.uid) {
+        await removeTokenFromFirestore(currentUser.uid);
+      }
       await signOut(auth);
     } catch (error) {
       console.error("Logout error:", error);

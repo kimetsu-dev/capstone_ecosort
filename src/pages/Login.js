@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { auth, db } from "../firebase";
-import { signInWithEmailAndPassword, signOut } from "firebase/auth";
+import { signInWithEmailAndPassword, signOut, sendPasswordResetEmail } from "firebase/auth";
 import { doc, getDoc, setDoc } from "firebase/firestore";
 import { useNavigate } from "react-router-dom";
 import { signInWithGoogle } from "../utils/googleLogin";
@@ -20,6 +20,11 @@ export default function Login() {
   const [toast, setToast] = useState({ message: '', type: '', visible: false });
   const [showPassword, setShowPassword] = useState(false);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [showForgotPassword, setShowForgotPassword] = useState(false);
+  const [resetEmail, setResetEmail] = useState('');
+  const [resetEmailError, setResetEmailError] = useState('');
+  const [isSendingReset, setIsSendingReset] = useState(false);
+  const [resetSent, setResetSent] = useState(false);
   const navigate = useNavigate();
 
   /* useEffect(() => {
@@ -189,6 +194,43 @@ const handleGoogleLogin = async (e) => {
   }
 };
 
+  const APP_URL = "https://ecosort-51471.web.app";
+
+  const handleForgotPassword = async () => {
+    setResetEmailError('');
+    const email = resetEmail.trim().toLowerCase();
+    if (!email) { setResetEmailError('Please enter your email address.'); return; }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { setResetEmailError('Please enter a valid email address.'); return; }
+    setIsSendingReset(true);
+    try {
+      await sendPasswordResetEmail(auth, email, {
+        url: `${APP_URL}/reset-password`,
+        handleCodeInApp: false,
+      });
+      setResetSent(true);
+    } catch (err) {
+      if (err.code === 'auth/user-not-found')         setResetEmailError('No account found with this email address.');
+      else if (err.code === 'auth/invalid-email')     setResetEmailError('Invalid email address format.');
+      else if (err.code === 'auth/too-many-requests') setResetEmailError('Too many requests. Please wait and try again.');
+      else setResetEmailError('Failed to send reset email. Please try again.');
+    }
+    setIsSendingReset(false);
+  };
+
+  const openForgotPassword = () => {
+    setResetEmail(values.email || '');
+    setResetEmailError('');
+    setResetSent(false);
+    setShowForgotPassword(true);
+  };
+
+  const closeForgotPassword = () => {
+    setShowForgotPassword(false);
+    setResetEmail('');
+    setResetEmailError('');
+    setResetSent(false);
+  };
+
   const renderError = (field) =>
     touched[field] && errors[field] && (
       <p className="text-xs text-red-500 mt-1">{errors[field]}</p>
@@ -284,6 +326,15 @@ const handleGoogleLogin = async (e) => {
               </button>
             </div>
             {renderError('password')}
+            <div className="flex justify-end mt-1">
+              <button
+                type="button"
+                onClick={openForgotPassword}
+                className={`text-xs font-medium hover:underline ${isDark ? 'text-emerald-400' : 'text-emerald-600'}`}
+              >
+                Forgot password?
+              </button>
+            </div>
           </div>
 
           <button
@@ -307,6 +358,92 @@ const handleGoogleLogin = async (e) => {
           </button>
         </p>
       </div>
+
+      {/* ── Forgot Password Modal ── */}
+      {showForgotPassword && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={closeForgotPassword} />
+          <div className={`relative w-full max-w-sm rounded-2xl shadow-2xl p-6 space-y-4 transition-colors duration-300 ${isDark ? 'bg-gray-800 border border-gray-700' : 'bg-white border border-gray-100'}`}>
+            <button
+              type="button"
+              onClick={closeForgotPassword}
+              className={`absolute top-4 right-4 w-7 h-7 rounded-full flex items-center justify-center transition-colors ${isDark ? 'text-gray-400 hover:bg-gray-700' : 'text-gray-400 hover:bg-gray-100'}`}
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+
+            {!resetSent ? (
+              <>
+                <div>
+                  <div className={`w-11 h-11 rounded-xl flex items-center justify-center mb-3 ${isDark ? 'bg-emerald-900/40' : 'bg-emerald-50'}`}>
+                    <svg className={`w-5 h-5 ${isDark ? 'text-emerald-400' : 'text-emerald-600'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
+                    </svg>
+                  </div>
+                  <h2 className={`text-lg font-bold ${isDark ? 'text-gray-100' : 'text-gray-800'}`}>Reset your password</h2>
+                  <p className={`text-sm mt-1 ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
+                    Enter your email and we'll send you a link to set a new password.
+                  </p>
+                </div>
+                <div>
+                  <input
+                    type="email"
+                    placeholder="Email address"
+                    value={resetEmail}
+                    onChange={(e) => { setResetEmail(e.target.value); setResetEmailError(''); }}
+                    onKeyDown={(e) => e.key === 'Enter' && handleForgotPassword()}
+                    disabled={isSendingReset}
+                    className={`block w-full px-4 py-3 border-2 rounded-xl transition-all duration-200 focus:outline-none placeholder-gray-400
+                      ${resetEmailError
+                        ? 'border-red-300 bg-red-50 focus:border-red-500'
+                        : isDark
+                        ? 'border-gray-600 bg-gray-700 text-gray-100 focus:border-emerald-500 hover:border-gray-500'
+                        : 'border-gray-200 bg-white text-gray-900 focus:border-emerald-500 hover:border-gray-300'}`}
+                  />
+                  {resetEmailError && <p className="text-xs text-red-500 mt-1">{resetEmailError}</p>}
+                </div>
+                <button
+                  type="button"
+                  onClick={handleForgotPassword}
+                  disabled={isSendingReset}
+                  className={`w-full py-3 rounded-xl font-semibold text-white transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed ${isDark ? 'bg-emerald-700 hover:bg-emerald-800' : 'bg-emerald-600 hover:bg-emerald-700'}`}
+                >
+                  {isSendingReset ? (
+                    <span className="flex items-center justify-center gap-2">
+                      <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
+                      </svg>
+                      Sending…
+                    </span>
+                  ) : 'Send Reset Link'}
+                </button>
+              </>
+            ) : (
+              <div className="text-center py-2 space-y-3">
+                <div className={`w-14 h-14 rounded-full flex items-center justify-center mx-auto ${isDark ? 'bg-emerald-900/40' : 'bg-emerald-50'}`}>
+                  <svg className={`w-7 h-7 ${isDark ? 'text-emerald-400' : 'text-emerald-600'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                  </svg>
+                </div>
+                <h2 className={`text-lg font-bold ${isDark ? 'text-gray-100' : 'text-gray-800'}`}>Check your inbox</h2>
+                <p className={`text-sm ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
+                  A reset link was sent to <span className={`font-semibold ${isDark ? 'text-gray-200' : 'text-gray-700'}`}>{resetEmail}</span>. Check your spam folder if you don't see it.
+                </p>
+                <button
+                  type="button"
+                  onClick={closeForgotPassword}
+                  className={`w-full py-2.5 rounded-xl font-semibold text-sm text-white transition-all duration-200 ${isDark ? 'bg-emerald-700 hover:bg-emerald-800' : 'bg-emerald-600 hover:bg-emerald-700'}`}
+                >
+                  Back to Sign In
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {toast.visible && (
         <div className={`fixed top-4 left-1/2 transform -translate-x-1/2

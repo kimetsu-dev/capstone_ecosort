@@ -18,5 +18,17 @@
   },
   "dataconnect": {
     "source": "dataconnect"
-  }
+  },
+  "functions": [
+    {
+      "source": "ecosort-notifications",
+      "codebase": "ecosort-notifications",
+      "ignore": [
+        "node_modules",
+        ".git",
+        "firebase-debug.log",
+        "firebase-debug.*.log"
+      ]
+    }
+  ]
 }

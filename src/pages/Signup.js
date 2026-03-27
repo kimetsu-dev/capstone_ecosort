@@ -22,6 +22,22 @@ const Signup = () => {
   const [toast, setToast] = useState({ message: '', type: '', visible: false });
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+
+  const passwordRules = [
+    { id: 'length',    label: 'At least 8 characters',    test: (p) => p.length >= 8 },
+    { id: 'uppercase', label: 'At least 1 uppercase letter', test: (p) => /[A-Z]/.test(p) },
+    { id: 'number',    label: 'At least 1 number',          test: (p) => /[0-9]/.test(p) },
+  ];
+
+  const getPasswordStrength = (pwd) => {
+    const passed = passwordRules.filter(r => r.test(pwd)).length;
+    if (passed === 0) return null;
+    if (passed === 1) return { label: 'Weak', color: 'bg-red-500',    width: 'w-1/3' };
+    if (passed === 2) return { label: 'Fair', color: 'bg-amber-400',  width: 'w-2/3' };
+    return              { label: 'Strong', color: 'bg-emerald-500', width: 'w-full' };
+  };
+
+  const passwordStrength = getPasswordStrength(values.password);
   const navigate = useNavigate();
 
   // Redirect to dashboard if they land here already logged in and verified
@@ -54,6 +70,8 @@ const Signup = () => {
 
     if (!values.password) newErrors.password = 'Password is required';
     else if (values.password.length < 8) newErrors.password = 'Password must be at least 8 characters';
+    else if (!/[A-Z]/.test(values.password)) newErrors.password = 'Password must include at least 1 uppercase letter';
+    else if (!/[0-9]/.test(values.password)) newErrors.password = 'Password must include at least 1 number';
 
     if (values.password !== values.confirmPassword) newErrors.confirmPassword = 'Passwords do not match';
 
@@ -254,6 +272,44 @@ const Signup = () => {
               </button>
             </div>
             {renderError('password')}
+
+            {/* Password strength bar */}
+            {values.password.length > 0 && (
+              <div className="mt-2 space-y-2">
+                <div className="flex items-center gap-2">
+                  <div className={`flex-1 h-1.5 rounded-full ${isDark ? 'bg-gray-600' : 'bg-gray-200'}`}>
+                    <div className={`h-1.5 rounded-full transition-all duration-300 ${passwordStrength?.color || ''} ${passwordStrength?.width || 'w-0'}`} />
+                  </div>
+                  {passwordStrength && (
+                    <span className={`text-xs font-semibold ${
+                      passwordStrength.label === 'Strong' ? isDark ? 'text-emerald-400' : 'text-emerald-600'
+                      : passwordStrength.label === 'Fair' ? 'text-amber-500'
+                      : 'text-red-500'
+                    }`}>{passwordStrength.label}</span>
+                  )}
+                </div>
+                <ul className="space-y-1">
+                  {passwordRules.map(rule => {
+                    const passed = rule.test(values.password);
+                    return (
+                      <li key={rule.id} className={`flex items-center gap-1.5 text-xs transition-colors ${
+                        passed
+                          ? isDark ? 'text-emerald-400' : 'text-emerald-600'
+                          : isDark ? 'text-gray-500' : 'text-gray-400'
+                      }`}>
+                        <svg className="w-3.5 h-3.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          {passed
+                            ? <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+                            : <circle cx="12" cy="12" r="9" strokeWidth={1.5} />
+                          }
+                        </svg>
+                        {rule.label}
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            )}
           </div>
 
           <div>

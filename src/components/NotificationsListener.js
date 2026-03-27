@@ -12,6 +12,11 @@ import {
   getDocs,
 } from "firebase/firestore";
 import { db } from "../firebase";
+import {
+  initMessaging,
+  requestFirebaseNotificationPermission,
+  onMessageListener,
+} from "../firebase-messaging";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -96,7 +101,99 @@ function reminderKey(type, scheduleId, dateStr) {
   return `${type}__${scheduleId}__${dateStr}`;
 }
 
-// ─── Hook: real-time notification toasts ─────────────────────────────────────
+// ─── Hook: Initialize FCM and request notification permission ────────────────
+// Runs once after login. Requests the browser permission prompt (if not already
+// granted), gets the FCM token, and saves it to Firestore so the Cloud Function
+// can send push notifications to this device even when the app is closed.
+
+function useFCMPermission(userId) {
+  useEffect(() => {
+    if (!userId) return;
+
+    async function setup() {
+      await initMessaging();
+      await requestFirebaseNotificationPermission(userId);
+    }
+
+    setup();
+  }, [userId]);
+}
+
+// ─── Hook: FCM foreground message handler ────────────────────────────────────
+// When the app IS open and a push arrives, FCM won't show a native notification
+// automatically — we intercept it here and show a toast instead, then write it
+// to Firestore so it also appears in the NotificationCenter bell.
+
+function useFCMForegroundMessages(userId) {
+  useEffect(() => {
+    if (!userId) return;
+
+    const unsubscribe = onMessageListener(async (payload) => {
+      console.log("[FCM Foreground] Received:", payload);
+
+      const title   = payload.notification?.title || "EcoSort";
+      const body    = payload.notification?.body  || "";
+      const data    = payload.data || {};
+      const type    = data.type || "general";
+      const message = body || title;
+
+      // Show an in-app toast
+      const toastOptions = {
+        position: "top-right",
+        autoClose: 7000,
+        closeOnClick: true,
+        pauseOnHover: true,
+      };
+
+      if (type === "submission_approved") {
+        toast.success(`♻️ ${title}: ${body}`, toastOptions);
+      } else if (type === "submission_rejected") {
+        toast.error(`❌ ${title}: ${body}`, toastOptions);
+      } else if (type === "redemption_confirmed") {
+        toast.success(`🎁 ${title}: ${body}`, toastOptions);
+      } else if (type === "redemption_rejected") {
+        toast.error(`❌ ${title}: ${body}`, toastOptions);
+      } else if (type === "support_response") {
+        toast.info(`💬 ${title}: ${body}`, { ...toastOptions, autoClose: 9000 });
+      } else if (type === "collection_today" || type === "collection_reminder") {
+        toast.warning(`🚛 ${title}: ${body}`, toastOptions);
+      } else if (type === "submission_today" || type === "submission_reminder") {
+        toast.success(`📅 ${title}: ${body}`, toastOptions);
+      } else {
+        toast.info(message, toastOptions);
+      }
+
+      // Also persist to Firestore so it shows in the NotificationCenter bell.
+      // The Cloud Function already writes a Firestore notification doc, so we
+      // only write here if the payload explicitly signals it hasn't been written
+      // (i.e. for any future direct-push scenarios).
+      if (data.writeNotification === "true") {
+        try {
+          const notifRef = collection(db, "notifications", userId, "userNotifications");
+          await addDoc(notifRef, {
+            type,
+            title,
+            message: body,
+            read: false,
+            createdAt: serverTimestamp(),
+            ...(data.submissionId && { submissionId: data.submissionId }),
+            ...(data.ticketId     && { ticketId:     data.ticketId     }),
+          });
+        } catch (err) {
+          console.error("Failed to persist FCM foreground notification:", err);
+        }
+      }
+    });
+
+    return () => {
+      if (typeof unsubscribe === "function") unsubscribe();
+    };
+  }, [userId]);
+}
+
+// ─── Hook: real-time Firestore notification toasts ───────────────────────────
+// Listens for new unread docs in the user's notification subcollection and
+// fires in-app toasts for anything written AFTER the session started.
 
 function useUserNotifications(userId) {
   const sessionStartTime = useRef(Date.now());
@@ -118,7 +215,6 @@ function useUserNotifications(userId) {
             notification.createdAt?.toMillis() || Date.now();
 
           if (notifTime > sessionStartTime.current) {
-            // Pick toast style based on notification type
             const isCollection =
               notification.type === "collection_reminder" ||
               notification.type === "collection_today";
@@ -139,6 +235,16 @@ function useUserNotifications(userId) {
               toast.warning(notification.message, toastOptions);
             } else if (isSubmission) {
               toast.success(notification.message, toastOptions);
+            } else if (notification.type === "submission_approved") {
+              toast.success(`♻️ ${notification.message}`, toastOptions);
+            } else if (notification.type === "submission_rejected") {
+              toast.error(`❌ ${notification.message}`, toastOptions);
+            } else if (notification.type === "redemption_confirmed") {
+              toast.success(`🎁 ${notification.message}`, toastOptions);
+            } else if (notification.type === "redemption_rejected") {
+              toast.error(`❌ ${notification.message}`, toastOptions);
+            } else if (notification.type === "redemption_cancelled") {
+              toast.info(`🚫 ${notification.message}`, toastOptions);
             } else if (isSupportResponse) {
               toast.info(notification.message, { ...toastOptions, autoClose: 8000 });
             } else {
@@ -157,7 +263,7 @@ function useUserNotifications(userId) {
 /**
  * Runs once per session (on mount) and checks whether any collection /
  * submission schedule falls on:
- *   • TODAY  → fires an immediate "don't forget!" reminder
+ *   • TODAY    → fires an immediate "don't forget!" reminder
  *   • TOMORROW → fires an advance "heads-up" reminder
  *
  * A Firestore doc is written per reminder so it also appears in the
@@ -169,7 +275,6 @@ function useScheduleReminders(userId) {
 
     async function checkAndFireReminders() {
       try {
-        // Fetch active schedules
         const [collSnap, subSnap] = await Promise.all([
           getDocs(
             query(
@@ -201,7 +306,7 @@ function useScheduleReminders(userId) {
         const tomorrow = new Date(today);
         tomorrow.setDate(today.getDate() + 1);
 
-        const todayStr = today.toISOString().split("T")[0];
+        const todayStr    = today.toISOString().split("T")[0];
         const tomorrowStr = tomorrow.toISOString().split("T")[0];
 
         const todayDayName = today
@@ -211,7 +316,6 @@ function useScheduleReminders(userId) {
           .toLocaleDateString("en-US", { weekday: "long" })
           .toLowerCase();
 
-        // Fetch already-written reminders for today to avoid duplication
         const existingSnap = await getDocs(
           query(
             collection(db, "notifications", userId, "userNotifications"),
@@ -367,8 +471,6 @@ function useSupportTicketResponses(userId) {
   useEffect(() => {
     if (!userId) return;
 
-    // Track which ticket IDs we've already toasted this session
-    // to avoid duplicate toasts if the snapshot fires multiple times.
     const toastedThisSession = new Set();
 
     const q = query(
@@ -380,28 +482,19 @@ function useSupportTicketResponses(userId) {
       const writes = [];
 
       for (const change of snapshot.docChanges()) {
-        // We care about both "added" (page load with existing response) and
-        // "modified" (admin just replied). But we only toast & write for changes
-        // that arrived after the session started AND haven't been toasted yet.
         if (change.type !== "added" && change.type !== "modified") continue;
 
-        const ticket = change.doc.data();
+        const ticket   = change.doc.data();
         const ticketId = change.doc.id;
 
-        // Skip tickets without an admin response
         if (!ticket.adminResponse?.trim()) continue;
-
-        // Skip if already handled this session
         if (toastedThisSession.has(ticketId)) continue;
 
-        // For "added" docs, only process if updatedAt is after session start
-        // (avoids re-notifying for responses that existed before login).
         const updatedAt = ticket.updatedAt?.toMillis?.() ?? 0;
         if (updatedAt <= sessionStartTime.current && change.type === "added") continue;
 
         toastedThisSession.add(ticketId);
 
-        // Show an in-app toast immediately
         toast.info(
           `💬 Support replied to your ticket: "${ticket.subject}"`,
           {
@@ -412,11 +505,9 @@ function useSupportTicketResponses(userId) {
           }
         );
 
-        // Write a persistent Firestore notification (deduped per ticket response)
         const dedupeKey = `support_response__${ticketId}__${updatedAt}`;
-        const notifRef = collection(db, "notifications", userId, "userNotifications");
+        const notifRef  = collection(db, "notifications", userId, "userNotifications");
 
-        // Check for existing notification with this dedupeKey before writing
         try {
           const existingSnap = await getDocs(
             query(notifRef, where("dedupeKey", "==", dedupeKey))
@@ -427,12 +518,12 @@ function useSupportTicketResponses(userId) {
                 type: "support_response",
                 title: "💬 Support Team Replied",
                 message: `Your ticket "${ticket.subject}" has received a response from our support team.`,
-                adminResponse: ticket.adminResponse.trim(),
+                adminResponse:  ticket.adminResponse.trim(),
                 ticketId,
-                ticketSubject: ticket.subject,
+                ticketSubject:  ticket.subject,
                 ticketCategory: ticket.category,
-                ticketStatus: ticket.status,
-                read: false,
+                ticketStatus:   ticket.status,
+                read:           false,
                 dedupeKey,
                 createdAt: serverTimestamp(),
               })
@@ -453,8 +544,19 @@ function useSupportTicketResponses(userId) {
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function NotificationsListener({ userId }) {
+  // Request FCM permission and save token to Firestore (enables background push)
+  useFCMPermission(userId);
+
+  // Handle FCM messages received while app is open (foreground)
+  useFCMForegroundMessages(userId);
+
+  // Firestore-driven in-app toasts
   useUserNotifications(userId);
+
+  // Schedule reminders (today / tomorrow)
   useScheduleReminders(userId);
+
+  // Support ticket reply toasts
   useSupportTicketResponses(userId);
 
   return (
@@ -467,6 +569,8 @@ export default function NotificationsListener({ userId }) {
             ? "bg-orange-50 border border-orange-200 text-orange-800"
             : ctx?.type === "success"
             ? "bg-green-50 border border-green-200 text-green-800"
+            : ctx?.type === "error"
+            ? "bg-red-50 border border-red-200 text-red-800"
             : "bg-blue-50 border border-blue-200 text-blue-800",
         ].join(" ")
       }

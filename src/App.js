@@ -13,12 +13,13 @@ import logo from "./images/logo.png";
 import "./index.css";
 
 import BackButtonHandler from "./BackButtonHandler";
-import { requestFirebaseNotificationPermission, onMessageListener } from "./firebase-messaging";
+import NotificationInit from "./NotificationInit";
 
 /* Pages */
 import Welcome from "./pages/Welcome";
 import Signup from "./pages/Signup";
 import Login from "./pages/Login";
+import ResetPassword from "./pages/ResetPassword";
 import AdminPanel from "./pages/AdminPanel";
 import AdminProfile from "./pages/AdminProfile";
 import AdminSettings from "./pages/AdminSettings";
@@ -635,30 +636,9 @@ const ThemedAppWrapper = () => {
   const activeTheme = theme === "system" ? systemTheme : theme;
   
 
-  useEffect(() => {
-    requestFirebaseNotificationPermission()
-      .then((token) => {
-        if (token) {
-          console.log("🔔 Notification permission granted. Token:", token);
-        }
-      })
-      .catch((err) => console.log("Notification permission error:", err));
-
-    const unsubscribe = onMessageListener((payload) => {
-      console.log("💬 Foreground Message Received:", payload);
-      const { title, body } = payload.notification || {};
-      
-      if (Notification.permission === 'granted') {
-         new Notification(title, { 
-           body,
-           icon: '/logo192.png'
-         });
-      }
-    });
-
-    return () => {
-    };
-  }, []);
+  // FCM permission + foreground message handling
+  // NotificationInit fires once after login, saves the FCM token to Firestore.
+  // Without this, getTokens() in Cloud Functions always returns [] → no pushes.
 
   if (!authInitialized) {
     return (
@@ -690,6 +670,7 @@ const ThemedAppWrapper = () => {
     >
       <Router>
         <BackButtonHandler />
+        <NotificationInit />
         <Routes>
           <Route path="/" element={<Navigate to="/welcome" replace />} />
 
@@ -716,6 +697,10 @@ const ThemedAppWrapper = () => {
                 <Signup />
               </RouteGuard>
             }
+          />
+          <Route
+            path="/reset-password"
+            element={<ResetPassword />}
           />
            <Route
             path="/verify"
