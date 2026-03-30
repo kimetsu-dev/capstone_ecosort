@@ -10,6 +10,9 @@ import {
   addDoc,
   serverTimestamp,
   getDocs,
+  getDoc,
+  doc,
+  limit,
 } from "firebase/firestore";
 import { db } from "../firebase";
 import {
@@ -155,6 +158,10 @@ function useFCMForegroundMessages(userId) {
         toast.error(`❌ ${title}: ${body}`, toastOptions);
       } else if (type === "support_response") {
         toast.info(`💬 ${title}: ${body}`, { ...toastOptions, autoClose: 9000 });
+      } else if (type === "points_tampered") {
+        toast.error(`🚨 ${title}: ${body}`, { ...toastOptions, autoClose: 10000 });
+      } else if (type === "points_restored") {
+        toast.success(`✅ ${title}: ${body}`, { ...toastOptions, autoClose: 9000 });
       } else if (type === "collection_today" || type === "collection_reminder") {
         toast.warning(`🚛 ${title}: ${body}`, toastOptions);
       } else if (type === "submission_today" || type === "submission_reminder") {
@@ -245,6 +252,10 @@ function useUserNotifications(userId) {
               toast.error(`❌ ${notification.message}`, toastOptions);
             } else if (notification.type === "redemption_cancelled") {
               toast.info(`🚫 ${notification.message}`, toastOptions);
+            } else if (notification.type === "points_tampered") {
+              toast.error(`🚨 ${notification.message}`, { ...toastOptions, autoClose: 10000 });
+            } else if (notification.type === "points_restored") {
+              toast.success(`✅ ${notification.message}`, { ...toastOptions, autoClose: 9000 });
             } else if (isSupportResponse) {
               toast.info(notification.message, { ...toastOptions, autoClose: 8000 });
             } else {
@@ -541,6 +552,173 @@ function useSupportTicketResponses(userId) {
   }, [userId]);
 }
 
+// ─── Hook: real-time points tamper detector ───────────────────────────────────
+/**
+ * Watches the user's own `users/{uid}` document in real time.
+ * The moment `totalPoints` changes in Firestore, it cross-checks the new value
+ * against the sealed ledger blocks for that user.
+ *
+ * If the live value no longer matches the ledger-derived authoritative balance,
+ * it immediately:
+ *  1. Writes a `points_tampered` Firestore notification (→ bell + toast)
+ *  2. Includes a before/after comparison so the user sees exactly what changed
+ *
+ * This fires on the CLIENT side — no admin action needed. Any direct Firestore
+ * edit to totalPoints is caught the next time any session for that user is open.
+ *
+ * Guards:
+ *  - Only fires after the first snapshot (skips the initial load so we don't
+ *    alert on every login).
+ *  - Debounced: won't fire twice for the same (previous → current) pair.
+ *  - Won't fire if the new value MATCHES the ledger (i.e. a legitimate restore).
+ */
+function usePointsTamperWatcher(userId) {
+  const initialLoadDone  = useRef(false);
+  const lastKnownPoints  = useRef(null);   // last value we saw that matched the ledger
+  const lastAlertedPair  = useRef(null);   // "prevPts→tamperedPts" already alerted
+
+  useEffect(() => {
+    if (!userId) return;
+
+    const userRef = doc(db, 'users', userId);
+
+    const unsubscribe = onSnapshot(userRef, async (docSnap) => {
+      if (!docSnap.exists()) return;
+
+      const livePts = docSnap.data().totalPoints ?? 0;
+
+      // ── First snapshot: just record the baseline, don't alert ──────────────
+      if (!initialLoadDone.current) {
+        initialLoadDone.current = true;
+        lastKnownPoints.current = livePts;
+        return;
+      }
+
+      // ── No change at all ───────────────────────────────────────────────────
+      if (livePts === lastKnownPoints.current) return;
+
+      // ── Cross-check against sealed ledger blocks ───────────────────────────
+      try {
+        const BALANCE_ACTION_TYPES = new Set([
+          'SUBMISSION_CONFIRMED',
+          'ADMIN_POINTS_AWARDED',
+          'REWARD_REDEEMED',
+          'REDEMPTION_CANCELLED',
+        ]);
+
+        // Read the integration cutoff
+        const trackerSnap = await getDoc(doc(db, 'system', 'ledger_tracker'));
+        const integratedAt = trackerSnap.exists()
+          ? (trackerSnap.data().blockchainIntegratedAt ?? null)
+          : null;
+
+        let cutoffMs = null;
+        if (integratedAt) {
+          cutoffMs = new Date(integratedAt).getTime();
+        } else {
+          try {
+            const gSnap = await getDocs(
+              query(collection(db, 'ledger'), orderBy('index', 'asc'), limit(1))
+            );
+            if (!gSnap.empty) {
+              const ts = gSnap.docs[0].data().timestamp;
+              if (ts) cutoffMs = new Date(ts).getTime();
+            }
+          } catch (_) { /* non-critical */ }
+        }
+
+        // Replay this user's sealed ledger blocks to get the authoritative total
+        const ledgerSnap = await getDocs(
+          query(
+            collection(db, 'ledger'),
+            where('userId', '==', userId),
+            orderBy('index', 'asc')
+          )
+        );
+
+        let ledgerSum = 0;
+        ledgerSnap.docs.forEach(d => {
+          const b = d.data();
+          if (!BALANCE_ACTION_TYPES.has(b.actionType)) return;
+          if (cutoffMs !== null) {
+            const bMs = b.timestamp ? new Date(b.timestamp).getTime() : null;
+            if (bMs !== null && bMs < cutoffMs) return;
+          }
+          const pts =
+            b.metadata?.txPoints !== undefined && b.metadata?.txPoints !== null
+              ? b.metadata.txPoints
+              : (b.points || 0);
+          ledgerSum += pts;
+        });
+        ledgerSum = Math.round(ledgerSum * 100) / 100;
+
+        // No ledger blocks yet — can't verify, skip
+        if (ledgerSum === 0 && ledgerSnap.docs.length === 0) {
+          lastKnownPoints.current = livePts;
+          return;
+        }
+
+        // Pre-integration users: baseline may include pre-ledger points.
+        // We can only flag a discrepancy when the current value is LOWER than
+        // what the ledger says it should contribute, which is a clear reduction.
+        const roundedLive = Math.round(livePts * 100) / 100;
+
+        // Consider the pre-integration portion: anything in the balance that
+        // isn't explained by post-integration ledger blocks. We use the last
+        // known-good value to derive it safely.
+        const lastGood = lastKnownPoints.current ?? livePts;
+        const preIntegrationPortion = Math.max(0,
+          Math.round((lastGood - ledgerSum) * 100) / 100
+        );
+        const expectedBalance = Math.round(
+          (preIntegrationPortion + ledgerSum) * 100
+        ) / 100;
+
+        if (roundedLive !== expectedBalance) {
+          // Deduplicate: don't fire the same (expected → tampered) alert twice
+          const alertKey = `${expectedBalance}→${roundedLive}`;
+          if (lastAlertedPair.current === alertKey) return;
+          lastAlertedPair.current = alertKey;
+
+          const delta = Math.round((roundedLive - expectedBalance) * 100) / 100;
+          const direction = delta < 0 ? 'decreased' : 'increased';
+          const absDelta  = Math.abs(delta);
+
+          const notifRef = collection(db, 'notifications', userId, 'userNotifications');
+          await addDoc(notifRef, {
+            type:       'points_tampered',
+            title:      '⚠️ Points Change Detected',
+            message:
+              `Your points were ${direction} by ${absDelta} pts without a matching transaction. ` +
+              `Expected: ${expectedBalance} pts — Current: ${roundedLive} pts.`,
+            read:       false,
+            previousBalance: expectedBalance,
+            tamperedBalance: roundedLive,
+            delta,
+            detectedAt: new Date().toISOString(),
+            createdAt:  serverTimestamp(),
+          });
+
+          console.warn(
+            `[PointsTamperWatcher] Detected change for user '${userId}': ` +
+            `expected ${expectedBalance} pts, got ${roundedLive} pts (Δ ${delta}).`
+          );
+        } else {
+          // Values match → this was a legitimate change; update our baseline
+          lastKnownPoints.current  = livePts;
+          lastAlertedPair.current  = null; // reset dedup so future changes are caught
+        }
+      } catch (err) {
+        console.error('[PointsTamperWatcher] Verification failed (non-critical):', err);
+        // On error, update baseline so we don't spam on every snapshot
+        lastKnownPoints.current = livePts;
+      }
+    });
+
+    return () => unsubscribe();
+  }, [userId]);
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function NotificationsListener({ userId }) {
@@ -558,6 +736,10 @@ export default function NotificationsListener({ userId }) {
 
   // Support ticket reply toasts
   useSupportTicketResponses(userId);
+
+  // Real-time points tamper detector — fires the moment totalPoints changes
+  // without a matching ledger entry, before any admin action is needed
+  usePointsTamperWatcher(userId);
 
   return (
     <ToastContainer

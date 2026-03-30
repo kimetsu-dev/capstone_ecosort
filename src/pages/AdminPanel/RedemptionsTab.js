@@ -253,14 +253,37 @@ const RedemptionsTab = ({
     try {
       await updateRedemptionStatus(redemption.id, "claimed");
 
+      // REDEMPTION_CLAIMED is an admin confirmation that the physical reward was
+      // handed over. No points move at this stage — they were already deducted when
+      // the user first redeemed in Rewards.js. Points value is 0.
+      // Create point_transaction first so we can link its ID into the ledger block.
+      let claimedPtId = null;
+      try {
+        const ptRef = await addDoc(collection(db, "point_transactions"), {
+          userId: redemption.userId,
+          type: "redemption_claimed",
+          points: 0,
+          description: `Reward Claimed – "${redemption.rewardName || "reward"}"`,
+          rewardName: redemption.rewardName ?? null,
+          rewardId: redemption.rewardId ?? null,
+          redemptionId: redemption.id,
+          category: "reward",
+          timestamp: serverTimestamp(),
+        });
+        claimedPtId = ptRef.id;
+      } catch (txError) {
+        console.error("⚠️ Warning: Failed to create claimed transaction record:", txError);
+      }
+
       await addToLedger(
         redemption.userId,
         "REDEMPTION_CLAIMED",
-        -(redemption.cost ?? redemption.pointCost ?? 0),
+        0,
         {
           redemptionId: redemption.id,
           rewardId: redemption.rewardId ?? null,
           rewardName: redemption.rewardName ?? null,
+          ...(claimedPtId ? { firestoreId: claimedPtId } : {}),
         }
       );
 
@@ -326,7 +349,28 @@ const RedemptionsTab = ({
         }
       });
 
-      // 2. Add refund entry to the blockchain ledger
+      // 2. Create point_transaction FIRST so we can link its ID into the ledger block.
+      let rejectedPtId = null;
+      try {
+        const ptRef = await addDoc(collection(db, "point_transactions"), {
+          userId: redemption.userId,
+          type: "points_refunded",
+          points: refundPoints, // positive so it shows as a credit
+          description: `Reward Rejected – "${redemption.rewardName || "reward"}"`,
+          refundNote: "Points Refunded",
+          rewardName: redemption.rewardName ?? null,
+          rewardId: redemption.rewardId ?? null,
+          redemptionId: redemption.id,
+          category: "refund",
+          timestamp: serverTimestamp(),
+          ...(reason ? { rejectionReason: reason } : {}),
+        });
+        rejectedPtId = ptRef.id;
+      } catch (txError) {
+        console.error("⚠️ Warning: Failed to create refund transaction record:", txError);
+      }
+
+      // 3. Add refund entry to the blockchain ledger
       await addToLedger(
         redemption.userId,
         "REDEMPTION_REJECTED",
@@ -337,23 +381,9 @@ const RedemptionsTab = ({
           rewardName: redemption.rewardName ?? null,
           refundedPoints: refundPoints,
           ...(reason ? { reason } : {}),
+          ...(rejectedPtId ? { firestoreId: rejectedPtId } : {}),
         }
       );
-
-      // 3. Create a point_transaction record so the refund appears in Transactions
-      await addDoc(collection(db, "point_transactions"), {
-        userId: redemption.userId,
-        type: "points_refunded",
-        points: refundPoints, // positive so it shows as a credit
-        description: `Reward Rejected – "${redemption.rewardName || "reward"}"`,
-        refundNote: "Points Refunded",
-        rewardName: redemption.rewardName ?? null,
-        rewardId: redemption.rewardId ?? null,
-        redemptionId: redemption.id,
-        category: "refund",
-        timestamp: serverTimestamp(),
-        ...(reason ? { rejectionReason: reason } : {}),
-      });
 
       // 4. Notify the user
       const message = reason

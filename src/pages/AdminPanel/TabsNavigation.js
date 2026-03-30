@@ -80,6 +80,14 @@ export default function TabsNavigation({
       icon: "♻️",
       count: null,
     },
+    {
+      id: "support",
+      label: "Support",
+      shortLabel: "Support",
+      mobileLabel: "Support",
+      icon: "🛠️",
+      count: null,
+    },
     // NEW: Blockchain Tab (placed after traditional ledger for logical flow)
     {
       id: "ledger",
@@ -96,14 +104,6 @@ export default function TabsNavigation({
       shortLabel: "Blockchain",
       mobileLabel: "Chain",
       icon: "⛓️",
-      count: null,
-    },
-    {
-      id: "support",
-      label: "Support",
-      shortLabel: "Support",
-      mobileLabel: "Support",
-      icon: "🛠️",
       count: null,
     },
   ];

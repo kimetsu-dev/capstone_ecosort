@@ -48,7 +48,7 @@ import {
   Link,
   Zap,
 } from 'lucide-react';
-import { verifyPointTransactions, verifyUserLedgerBlocks, findLedgerBlockForTransaction } from '../../utils/blockchainService'; 
+import { verifyPointTransactions, verifyUserLedgerBlocks, findLedgerBlockForTransaction, recoverTamperedPoints, restoreUserBalance, sendTamperNotification } from '../../utils/blockchainService'; 
 
 const formatTimestamp = (timestamp) => {
     if (timestamp?.toDate) {
@@ -70,11 +70,62 @@ const capitalizeWords = (str) =>
 // Shown when verifyPointTransactions finds a user whose DB balance ≠ ledger sum.
 // Fetches the user's ledger blocks so the admin can see exactly what was recorded
 // vs what is stored in users/{uid}.totalPoints.
-function AuditDiscrepancyPanel({ differences, users, isDark }) {
+function AuditDiscrepancyPanel({ differences, users, isDark, onRecoveryComplete }) {
   const [expanded, setExpanded] = useState(null); // userId currently expanded
   const [ledgerBlocks, setLedgerBlocks] = useState({}); // { userId: block[] }
   const [loadingBlocks, setLoadingBlocks] = useState({}); // { userId: bool }
   const [tamperedBlocks, setTamperedBlocks] = useState({}); // { userId: tamperedBlock[] }
+  const [restoringBalance, setRestoringBalance] = useState({}); // { userId: bool }
+  const [restoreResults, setRestoreResults] = useState({});     // { userId: result }
+
+  const handleRestoreBalance = async (userId, fromDb, fromLedger) => {
+    if (!window.confirm(
+      `Restore balance for user '${userId}'?\n\nCurrent DB: ${fromDb} pts\nLedger (source of truth): ${fromLedger} pts\n\nThis will correct their totalPoints and notify them.`
+    )) return;
+
+    setRestoringBalance(prev => ({ ...prev, [userId]: true }));
+    try {
+      // 1. Notify user that a discrepancy was found
+      await sendTamperNotification(userId, 'points_tampered', {
+        title: '⚠️ Points Balance Discrepancy Detected',
+        message:
+          'A discrepancy was found between your points balance and the blockchain ledger record. ' +
+          'Your correct balance is being restored automatically.',
+        detectedAt: new Date().toISOString(),
+      });
+
+      // 2. Restore from ledger replay
+      const result = await restoreUserBalance(userId);
+      setRestoreResults(prev => ({ ...prev, [userId]: result }));
+
+      if (!result.noChangeNeeded) {
+        // 3. Notify user that balance is now corrected
+        await sendTamperNotification(userId, 'points_restored', {
+          title: '✅ Points Balance Restored',
+          message:
+            `Your points balance has been restored from ${result.previousBalance} to ` +
+            `${result.ledgerBalance} pts using the sealed blockchain record as the source of truth.`,
+          previousBalance: result.previousBalance,
+          restoredBalance: result.ledgerBalance,
+          delta: result.delta ?? null,
+          restoredAt: new Date().toISOString(),
+        });
+      }
+
+      alert(
+        result.noChangeNeeded
+          ? `ℹ️ Balance for '${userId}' is already correct (${result.ledgerBalance} pts).`
+          : `✅ Balance restored: ${result.previousBalance} → ${result.ledgerBalance} pts.\nUser has been notified.`
+      );
+
+      if (onRecoveryComplete) onRecoveryComplete();
+    } catch (err) {
+      setRestoreResults(prev => ({ ...prev, [userId]: { success: false, error: err.message } }));
+      alert('Balance restore failed: ' + err.message);
+    } finally {
+      setRestoringBalance(prev => ({ ...prev, [userId]: false }));
+    }
+  };
 
   const getUserInfo = (userId) => {
     const u = users.find(u => u.id === userId);
@@ -621,16 +672,53 @@ function AuditDiscrepancyPanel({ differences, users, isDark }) {
                       </div>
                     )}
 
-                    {/* What to do */}
-                    <div className={`px-4 py-3 flex items-start gap-2 text-xs border-t ${
-                      isDark ? 'bg-gray-800 border-gray-700 text-gray-400' : 'bg-gray-50 border-gray-200 text-gray-500'
+                    {/* Restore Balance action bar */}
+                    <div className={`px-4 py-3 flex flex-col sm:flex-row sm:items-center gap-3 border-t ${
+                      isDark ? 'bg-gray-800/80 border-gray-700' : 'bg-gray-50 border-gray-200'
                     }`}>
-                      <Info className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
-                      <span>
-                        To investigate: open the <strong>Blockchain</strong> tab and search for this user's blocks to verify
-                        chain integrity. If the chain is intact but DB balance differs, <code className="font-mono text-[10px]">users/{userId.slice(0,8)}…totalPoints</code> was
-                        modified directly in Firestore without going through the ledger.
-                      </span>
+                      <div className="flex items-start gap-2 flex-1">
+                        <Info className={`w-3.5 h-3.5 flex-shrink-0 mt-0.5 ${isDark ? 'text-gray-500' : 'text-gray-400'}`} />
+                        <span className={`text-xs ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
+                          If the chain is intact but the DB balance differs, <code className="font-mono text-[10px]">users/{userId.slice(0,8)}…totalPoints</code> was
+                          likely modified directly in Firestore. Click <strong>Restore Balance</strong> to correct it
+                          from the sealed ledger and notify the user automatically.
+                        </span>
+                      </div>
+
+                      {restoreResults[userId]?.success && !restoreResults[userId]?.noChangeNeeded ? (
+                        <div className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-bold flex-shrink-0 ${
+                          isDark ? 'bg-green-900/40 text-green-300 border border-green-700' : 'bg-green-50 text-green-700 border border-green-300'
+                        }`}>
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                          Restored — user notified
+                        </div>
+                      ) : restoreResults[userId]?.noChangeNeeded ? (
+                        <div className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-bold flex-shrink-0 ${
+                          isDark ? 'bg-blue-900/40 text-blue-300 border border-blue-700' : 'bg-blue-50 text-blue-700 border border-blue-300'
+                        }`}>
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                          Already correct
+                        </div>
+                      ) : (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleRestoreBalance(userId, fromDb, fromLedger);
+                          }}
+                          disabled={restoringBalance[userId]}
+                          className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-bold flex-shrink-0 transition-colors disabled:opacity-60 disabled:cursor-not-allowed ${
+                            isDark
+                              ? 'bg-blue-700 hover:bg-blue-600 text-white'
+                              : 'bg-blue-600 hover:bg-blue-700 text-white'
+                          }`}
+                        >
+                          {restoringBalance[userId] ? (
+                            <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Restoring…</>
+                          ) : (
+                            <><RotateCcw className="w-3.5 h-3.5" /> Restore Balance & Notify User</>
+                          )}
+                        </button>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -1446,6 +1534,7 @@ export default function TransactionsTab() {
           differences={verification.differences}
           users={users}
           isDark={isDark}
+          onRecoveryComplete={runVerification}
         />
       )}
 

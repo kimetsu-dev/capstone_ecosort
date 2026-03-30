@@ -354,9 +354,9 @@ export default function AdminPanel() {
     { id: "wasteTypes", label: "Waste Types", icon: <FiTag /> },
     { id: "schedules", label: "Schedules", icon: <FiCalendar /> },
     { id: "forum", label: "Forum", icon: <FiAlertTriangle />, badge: reportsPendingCount },
+    { id: "support", label: "Support", icon: <FiAlertTriangle /> },
     { id: "ledger", label: "Immutable Ledger", icon: <FiLink /> },
     { id: "blockchain", label: "Chain Integrity", icon: <FiLink /> },
-    { id: "support", label: "Support", icon: <FiAlertTriangle /> },
   ];
 
   if (loadingAuth) {
@@ -463,12 +463,12 @@ export default function AdminPanel() {
                   items: menuItems.filter(m => ["wasteTypes", "schedules"].includes(m.id))
                 },
                 {
-                  group: "Security & Verification",
-                  items: menuItems.filter(m => ["ledger", "blockchain"].includes(m.id))
-                },
-                {
                   group: "Help & Support",
                   items: menuItems.filter(m => ["support"].includes(m.id))
+                },
+                {
+                  group: "Security & Verification",
+                  items: menuItems.filter(m => ["ledger", "blockchain"].includes(m.id))
                 }
               ].map(({ group, items }) => (
                 <div key={group}>

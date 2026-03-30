@@ -119,6 +119,9 @@ export default function SubmitWaste() {
   const [confirmRemoveItem, setConfirmRemoveItem] = useState({ show: false, id: null });
   const [confirmSubmit, setConfirmSubmit] = useState(false);
 
+  // Success popup after submission
+  const [successPopup, setSuccessPopup] = useState({ visible: false, points: 0, isMixed: false });
+
   // History filter & detail modal
   const [historyFilter, setHistoryFilter] = useState('all');
   // Store only the submission ID — modal always derives live data from userSubmissions
@@ -139,7 +142,8 @@ export default function SubmitWaste() {
       selectedSubmissionId !== null ||
       confirmDelete.show ||
       confirmRemoveItem.show ||
-      confirmSubmit;
+      confirmSubmit ||
+      successPopup.visible;
 
     if (isModalOpen) {
       // Capture current scroll position before locking
@@ -173,7 +177,7 @@ export default function SubmitWaste() {
         window.scrollTo(0, parseInt(scrollY || '0', 10) * -1);
       }
     };
-  }, [showHistory, selectedSubmissionId, confirmDelete.show, confirmRemoveItem.show, confirmSubmit]);
+  }, [showHistory, selectedSubmissionId, confirmDelete.show, confirmRemoveItem.show, confirmSubmit, successPopup.visible]);
 
   // Wait for Firebase to finish rehydrating the session before doing anything
   useEffect(() => {
@@ -413,7 +417,11 @@ export default function SubmitWaste() {
           summary: payload.type, 
           weight: payload.weight || payload.totalWeight,
           items: payload.items || null,
-          firestoreId: docRef.id,
+          // Use submissionId (not firestoreId) so the tamper checker never
+          // tries to look this up in point_transactions. WASTE_SUBMIT blocks
+          // link to waste_submissions docs — no point_transaction exists yet
+          // at submit time. Points are only awarded on SUBMISSION_CONFIRMED.
+          submissionId: docRef.id,
           status: 'pending_approval'
         }
       );
@@ -424,6 +432,8 @@ export default function SubmitWaste() {
           : "Waste submission successful!", 
         "success"
       );
+
+      setSuccessPopup({ visible: true, points: payload.points, isMixed: entries.length > 1 });
       
       setEntries([{ id: Date.now(), wasteType: wasteTypes[0]?.name || "", weight: "" }]);
       
@@ -1391,6 +1401,45 @@ export default function SubmitWaste() {
                 {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : "Submit"}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {successPopup.visible && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
+          <div className={`w-full max-w-sm p-8 rounded-2xl shadow-2xl text-center ${
+            isDark ? "bg-gray-800 border border-gray-700" : "bg-white"
+          } animate-slide-in`}>
+            {/* Animated checkmark circle */}
+            <div className="flex items-center justify-center mb-5">
+              <div className="w-20 h-20 rounded-full bg-green-100 dark:bg-green-900/40 flex items-center justify-center">
+                <CheckCircle className="w-11 h-11 text-green-500" strokeWidth={1.8} />
+              </div>
+            </div>
+
+            <h2 className={`text-xl font-bold mb-1 ${styles.textPrimary}`}>
+              Waste Submitted!
+            </h2>
+            <p className={`text-sm mb-5 ${styles.textSecondary}`}>
+              {successPopup.isMixed
+                ? "Your mixed bundle has been submitted for verification."
+                : "Your waste submission is pending staff verification."}
+            </p>
+
+            {/* Points badge */}
+            <div className={`inline-flex items-center gap-2 px-4 py-2 rounded-full mb-6 ${
+              isDark ? "bg-green-900/40 text-green-300" : "bg-green-50 text-green-700"
+            }`}>
+              <Award className="w-4 h-4" />
+              <span className="font-semibold text-sm">~{successPopup.points} pts pending</span>
+            </div>
+
+            <button
+              onClick={() => setSuccessPopup({ visible: false, points: 0, isMixed: false })}
+              className="w-full py-3 rounded-xl font-semibold bg-green-600 hover:bg-green-700 text-white transition-colors"
+            >
+              Done
+            </button>
           </div>
         </div>
       )}

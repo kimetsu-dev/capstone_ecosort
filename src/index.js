@@ -68,12 +68,14 @@ serviceWorkerRegistration.register({
 
 // Listen for controller change and reload
 if ('serviceWorker' in navigator) {
+  let refreshing = false; // Prevent multiple reloads
   navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (refreshing) return;
+    refreshing = true;
     console.log('🔄 New service worker activated, reloading...');
     window.location.reload();
   });
 }
-
 // Check for updates when app comes back into focus
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden && 'serviceWorker' in navigator) {

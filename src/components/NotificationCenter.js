@@ -332,6 +332,18 @@ export default function NotificationCenter({ userId = "demo-user" }) {
             <FiX className="w-4 h-4 text-gray-500 dark:text-gray-400" />
           </div>
         );
+      case "points_tampered":
+        return (
+          <div className="w-8 h-8 rounded-lg bg-red-100 dark:bg-red-900/30 flex items-center justify-center flex-shrink-0">
+            <FiAlertCircle className="w-4 h-4 text-red-600 dark:text-red-400" />
+          </div>
+        );
+      case "points_restored":
+        return (
+          <div className="w-8 h-8 rounded-lg bg-green-100 dark:bg-green-900/30 flex items-center justify-center flex-shrink-0">
+            <FiCheckCircle className="w-4 h-4 text-green-600 dark:text-green-400" />
+          </div>
+        );
       case "waste_submission":
         return <FiTrash className={`${iconClass} text-green-500`} />;
       case "submission_approved":
@@ -480,6 +492,56 @@ export default function NotificationCenter({ userId = "demo-user" }) {
                       {notif.adminResponse}
                     </p>
                   </div>
+                )}
+              </div>
+            )}
+
+            {/* Tamper detected detail */}
+            {notif.type === "points_tampered" && (
+              <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-xl p-4 mb-4">
+                <h4 className="font-semibold text-red-900 dark:text-red-300 mb-2 flex items-center gap-2">
+                  <FiAlertCircle className="w-4 h-4" />
+                  Tampering Details
+                </h4>
+                <p className="text-red-700 dark:text-red-400 text-sm leading-relaxed">
+                  The ledger integrity system detected that your points record was modified
+                  outside of normal operations. Your account is being automatically corrected
+                  using the sealed ledger as the source of truth.
+                </p>
+                {notif.detectedAt && (
+                  <p className="text-red-600 dark:text-red-500 text-xs mt-2 font-mono bg-red-100 dark:bg-red-900/40 px-2 py-1 rounded">
+                    Detected: {new Date(notif.detectedAt).toLocaleString()}
+                  </p>
+                )}
+              </div>
+            )}
+
+            {/* Points restored detail */}
+            {notif.type === "points_restored" && (
+              <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-xl p-4 mb-4">
+                <h4 className="font-semibold text-green-900 dark:text-green-300 mb-2 flex items-center gap-2">
+                  <FiCheckCircle className="w-4 h-4" />
+                  Restoration Summary
+                </h4>
+                {(notif.previousBalance != null && notif.restoredBalance != null) && (
+                  <div className="flex items-center gap-3 mb-2">
+                    <span className="text-sm font-mono bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300 px-2 py-1 rounded line-through">
+                      {notif.previousBalance} pts
+                    </span>
+                    <span className="text-gray-400">→</span>
+                    <span className="text-sm font-mono bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300 px-2 py-1 rounded font-bold">
+                      {notif.restoredBalance} pts
+                    </span>
+                  </div>
+                )}
+                <p className="text-green-700 dark:text-green-400 text-sm leading-relaxed">
+                  Your balance has been restored to the correct value sealed in the ledger.
+                  No further action is required on your part.
+                </p>
+                {notif.restoredAt && (
+                  <p className="text-green-600 dark:text-green-500 text-xs mt-2 font-mono bg-green-100 dark:bg-green-900/40 px-2 py-1 rounded">
+                    Restored: {new Date(notif.restoredAt).toLocaleString()}
+                  </p>
                 )}
               </div>
             )}

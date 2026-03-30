@@ -125,15 +125,20 @@ async function addNotification(userId, message, type = "submission_status", extr
 // Helper function to create point transactions
 async function createPointTransaction({ userId, points, description, type = "points_awarded" }) {
   try {
-    await addDoc(collection(db, "point_transactions"), {
+    // Return the new document ID so callers can pass it to addToLedger as
+    // firestoreId. The tamper checker then cross-verifies the live doc points
+    // against the sealed metadata.txPoints in the blockchain block.
+    const docRef = await addDoc(collection(db, "point_transactions"), {
       userId,
       points,
       description,
       timestamp: serverTimestamp(),
       type,
     });
+    return docRef.id;
   } catch (error) {
     console.error("Failed to create point transaction:", error);
+    return null;
   }
 }
 
@@ -430,7 +435,10 @@ const SubmissionsTab = ({
 
       const userRef = doc(db, "users", submission.userId);
 
-      await createPointTransaction({
+      // Capture the returned point_transaction doc ID so we can seal it into
+      // the blockchain block as firestoreId. The tamper checker will then
+      // cross-verify the live doc points against metadata.txPoints on every run.
+      const pointTxId = await createPointTransaction({
         userId: submission.userId,
         points: awardedPoints,
         description: `Awarded points for ${isMixedBundle ? 'mixed bundle' : submission.type} submission (ID: ${submission.id.slice(0,6)})`,
@@ -458,16 +466,19 @@ const SubmissionsTab = ({
         `Your ${isMixedBundle ? 'mixed bundle' : 'waste'} submission has been confirmed! You earned ${awardedPoints.toFixed(2)} points.`
       );
 
-      // ⛓️ Record the points award on the immutable ledger
+      // ⛓️ Record the points award on the immutable ledger.
+      // firestoreId is the point_transaction doc just created above — the tamper
+      // checker verifies its live .points against the sealed metadata.txPoints.
+      // Guard: if createPointTransaction failed (null), omit firestoreId entirely
+      // so the checker skips this block rather than raising a false deleted alert.
       await addToLedger(
         submission.userId,
         "SUBMISSION_CONFIRMED",
         awardedPoints,
         {
           submissionId: submission.id,
+          ...(pointTxId ? { firestoreId: pointTxId } : {}),
           type: isMixedBundle ? "mixed_bundle" : submission.type,
-          // Mixed bundles store weight as totalWeight, not weight.
-          // Using submission.weight for a bundle yields undefined -> null (wrong data).
           weight: isMixedBundle
             ? (submission.totalWeight ?? submission.items?.reduce((s, i) => s + (i.weight || 0), 0) ?? null)
             : (submission.weight ?? null),

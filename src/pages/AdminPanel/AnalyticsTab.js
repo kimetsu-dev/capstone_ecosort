@@ -1,8 +1,10 @@
 // ─── AnalyticsTab.js ──────────────────────────────────────────────────────────
 // Main Analytics Dashboard — fully responsive from 320 px upward.
 // Tabs: Overview · Activity · Community · Rewards · Intelligence
+// Full dark-mode support via ThemeContext (isDark).
 
 import React, { useState, useEffect, useCallback } from 'react';
+import { useTheme } from '../../contexts/ThemeContext';
 import { db } from '../../firebase';
 import {
   collection, getDocs, query, orderBy, where, Timestamp,
@@ -41,6 +43,8 @@ const TAB_DEFS = [
 // Main component
 // ─────────────────────────────────────────────────────────────────────────────
 const AnalyticsTab = () => {
+  const { isDark } = useTheme() || {};
+
   // ── State ──────────────────────────────────────────────────────────────────
   const [loading,           setLoading]           = useState(true);
   const [activePreset,      setActivePreset]      = useState(30);
@@ -88,15 +92,12 @@ const AnalyticsTab = () => {
         const snap = await getDocs(collection(db, 'waste_submissions'));
         submissions = snap.docs.map(d => ({ id: d.id, ...d.data() }))
           .filter(s => {
-            // Try submittedAt first, fall back to createdAt for legacy submissions
             const d = toDate(s.submittedAt || s.createdAt);
             return d && d >= dateRange.start && d <= dateRange.end;
           });
       }
 
       const usersSnap = await getDocs(collection(db, 'users'));
-      // Exclude admin accounts from all community KPIs — admins don't submit waste,
-      // so counting them inflates "Total Members" and deflates participation %.
       const users = usersSnap.docs
         .map(d => ({ id: d.id, ...d.data() }))
         .filter(u => !u.role || u.role === 'resident');
@@ -163,7 +164,7 @@ const AnalyticsTab = () => {
       }
       setTrendData(finalTrend);
 
-      // ── Kg trend (weight over time) ────────────────────────────────────────
+      // ── Kg trend ──────────────────────────────────────────────────────────
       const kgDayMap = {};
       submissions.forEach(s => {
         const d = toDate(s.submittedAt);
@@ -179,7 +180,6 @@ const AnalyticsTab = () => {
         const k = fmtDay(d);
         return { date: k, kg: parseFloat((kgDayMap[k]?.kg || 0).toFixed(2)), submissions: kgDayMap[k]?.count || 0 };
       });
-      // Bucket weekly for long ranges
       let finalKgTrend = kgTrend;
       if (kgTrend.length > 60) {
         const weekly = [];
@@ -195,7 +195,7 @@ const AnalyticsTab = () => {
       }
       setKgTrendData(finalKgTrend);
 
-      // ── Kg forecast (predictive analytics) ────────────────────────────────
+      // ── Kg forecast ───────────────────────────────────────────────────────
       if (hasWeightData && finalKgTrend.length >= 7) {
         const half         = Math.max(1, Math.floor(finalKgTrend.length / 2));
         const recentKg     = finalKgTrend.slice(-half);
@@ -206,20 +206,15 @@ const AnalyticsTab = () => {
         const oldAvgKgDay  = olderKg.length
           ? (olderKg.reduce((s, d) => s + d.kg, 0) / olderKg.length) / kgBucketDays
           : avgKgDay;
-
-        // Require a meaningful older baseline to avoid inflated % (same rule as submissions)
-        const minKgBase    = 0.1;  // at least 0.1 kg/day avg in older half
+        const minKgBase    = 0.1;
         const kgGrowth     = oldAvgKgDay >= minKgBase
           ? Math.max(-5, Math.min(5, (avgKgDay - oldAvgKgDay) / oldAvgKgDay))
           : 0;
-
-        // Confidence based on data density
         const kgDataPoints = finalKgTrend.filter(d => d.kg > 0).length;
         const kgConfidence =
           kgDataPoints >= 14 ? 'High'
           : kgDataPoints >= 7  ? 'Medium'
           : 'Low';
-
         setKgPredictions({
           nextMonthKg:      Math.max(0, parseFloat((avgKgDay * 30).toFixed(1))),
           avgKgPerDay:      parseFloat(avgKgDay.toFixed(2)),
@@ -295,7 +290,6 @@ const AnalyticsTab = () => {
           if (!rewardTimeMap[name]) rewardTimeMap[name] = {};
           rewardTimeMap[name][wk] = (rewardTimeMap[name][wk] || 0) + 1;
         });
-
         const now   = new Date();
         const weeks = Array.from({ length: 12 }, (_, i) => {
           const d = new Date(now.getTime() - (11 - i) * 7 * 86400000);
@@ -307,7 +301,6 @@ const AnalyticsTab = () => {
           Object.values(rewardTimeMap).forEach(rm => { total += rm[wk] || 0; });
           return { week: new Date(wk).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }), total };
         });
-
         const perReward = computedRewardTrends.map(({ rewardName, count }) => {
           const series = weeks.map(wk => rewardTimeMap[rewardName]?.[wk] || 0);
           const n = series.length;
@@ -318,44 +311,36 @@ const AnalyticsTab = () => {
           const denom = (n * sumX2 - sumX * sumX) || 1;
           const slope = (n * sumXY - sumX * sumY) / denom;
           const intercept = (sumY - slope * sumX) / n;
-
           const nextWeekVal = Math.max(0, slope * n + intercept);
           const next30Days  = Math.max(0, Math.round(nextWeekVal * 4.3));
           const recentAvg   = series.slice(-4).reduce((s, v) => s + v, 0) / 4;
           const olderAvg    = series.slice(0, 4).reduce((s, v) => s + v, 0) / 4;
-          // Only calculate velocity when older average is meaningful (≥0.25 redemptions/week)
-          // to avoid wild percentages from near-zero bases.
           const velocityPct = olderAvg >= 0.25
             ? Math.max(-500, Math.min(500, ((recentAvg - olderAvg) / olderAvg) * 100))
             : 0;
           const trend       = slope > 0.1 ? 'rising' : slope < -0.1 ? 'declining' : 'stable';
           const nonZeroWks  = series.filter(v => v > 0).length;
           const confidence  = nonZeroWks >= 6 ? 'High' : nonZeroWks >= 3 ? 'Medium' : 'Low';
-
           return { rewardName, totalCount: count, series, weeks, next30Days,
             velocityPct: parseFloat(velocityPct.toFixed(1)), trend, confidence,
             slope: parseFloat(slope.toFixed(3)) };
         });
-
         const risingCount    = perReward.filter(r => r.trend === 'rising').length;
         const decliningCount = perReward.filter(r => r.trend === 'declining').length;
         const totalNext30    = perReward.reduce((s, r) => s + r.next30Days, 0);
         const hotReward      = [...perReward].sort((a, b) => b.velocityPct - a.velocityPct)[0];
         const fadingReward   = [...perReward].filter(r => r.trend === 'declining')
                                .sort((a, b) => a.velocityPct - b.velocityPct)[0];
-
         setRewardPredictions({ perReward, timeline: globalTimeline,
           summary: { risingCount, decliningCount, totalNext30, hotReward, fadingReward } });
       }
 
       // ── Submission forecast ────────────────────────────────────────────────
-      // bucketDays: if trend was aggregated weekly (>60 days) each bucket = 7 days
       const bucketDays = trend.length > 60 ? 7 : 1;
       if (finalTrend.length >= 7) {
         const half      = Math.max(1, Math.floor(finalTrend.length / 2));
         const recent    = finalTrend.slice(-half);
         const older     = finalTrend.slice(0, finalTrend.length - half);
-
         const recentSum  = recent.reduce((s, d) => s + d.submissions, 0);
         const olderSum   = older.length ? older.reduce((s, d) => s + d.submissions, 0) : recentSum;
         const avgBucket  = recentSum / recent.length;
@@ -363,26 +348,17 @@ const AnalyticsTab = () => {
         const oldAvgDay  = older.length
           ? (olderSum / older.length) / bucketDays
           : avgDay;
-
-        // Only report growth when older period has meaningful data (≥1 submission/day avg)
-        // to avoid wild percentages from near-zero baselines.
-        const minMeaningfulBase = 0.5; // at least 0.5 submissions/day in older half
+        const minMeaningfulBase = 0.5;
         const growth = oldAvgDay >= minMeaningfulBase
           ? (avgDay - oldAvgDay) / oldAvgDay
           : 0;
-
-        // Clamp growth display to ±500% — beyond that the data is too sparse to be meaningful
         const clampedGrowth = Math.max(-5, Math.min(5, growth));
-
-        // Confidence: based on data density, not growth magnitude
-        // More data points + higher volume = more confident
         const totalSubmissionsInPeriod = finalTrend.reduce((s, d) => s + d.submissions, 0);
         const dataPoints = finalTrend.length;
         const confidence =
           dataPoints >= 14 && totalSubmissionsInPeriod >= 20 ? 'High'
           : dataPoints >= 7  && totalSubmissionsInPeriod >= 7  ? 'Medium'
           : 'Low';
-
         setPredictions({
           nextMonth:      Math.max(0, Math.round(avgDay * 30)),
           avgPerDay:      parseFloat(avgDay.toFixed(1)),
@@ -427,13 +403,13 @@ const AnalyticsTab = () => {
       ['Generated', new Date().toLocaleString()],
       ['Period', `${dateRange.start.toLocaleDateString()} – ${dateRange.end.toLocaleDateString()}`],
       [], ['KPI', 'Value'],
-      ['Total Drop-offs',          kpi.totalSubmissions],
-      ['Active Members',           kpi.activeUsersInRange],
-      ['Total Members',            kpi.totalUsers],
-      ['Avg/Day',                  kpi.avgDaily],
-      ['Rewards Claimed',          kpi.totalRedemptions],
-      ['Violations',               kpi.totalReports],
-      ['Total Waste (kg)',         kpi.totalKg ?? 'N/A'],
+      ['Total Drop-offs',  kpi.totalSubmissions],
+      ['Active Members',   kpi.activeUsersInRange],
+      ['Total Members',    kpi.totalUsers],
+      ['Avg/Day',          kpi.avgDaily],
+      ['Rewards Claimed',  kpi.totalRedemptions],
+      ['Violations',       kpi.totalReports],
+      ['Total Waste (kg)', kpi.totalKg ?? 'N/A'],
       [], ['Date', 'Drop-offs'],
       ...trendData.map(d => [d.date, d.submissions]),
       [], ['Waste Type', 'Drop-offs', 'Kg'],
@@ -453,7 +429,7 @@ const AnalyticsTab = () => {
 
   // ── Loading skeleton ───────────────────────────────────────────────────────
   if (loading) return (
-    <div className="space-y-4 sm:space-y-6 p-3 sm:p-6 bg-gray-50 min-h-screen">
+    <div className={`space-y-4 sm:space-y-6 p-3 sm:p-6 min-h-screen ${isDark ? 'bg-gray-900' : 'bg-gray-50'}`}>
       <div className="flex justify-between items-center gap-3">
         <Skeleton className="h-8 w-36 sm:w-56" />
         <Skeleton className="h-8 w-40 sm:w-72" />
@@ -473,12 +449,8 @@ const AnalyticsTab = () => {
   const participationPct = kpi.totalUsers > 0 ? Math.round((kpi.activeUsersInRange / kpi.totalUsers) * 100) : 0;
   const avgKgPerSub      = kpi.hasWeightData && kpi.totalSubmissions > 0
     ? parseFloat((parseFloat(kpi.totalKg) / kpi.totalSubmissions).toFixed(2)) : null;
-  // redeemRate = % of active members who claimed at least one reward (not total claims / members)
-  // Using intelligence.retentionStats to stay consistent — active member set is the same.
-  // Fallback: use kpi.totalRedemptions / activeUsers as a rough proxy (may exceed 100 if one person claims many).
   const redeemRate       = kpi.activeUsersInRange > 0
     ? Math.min(100, Math.round((kpi.totalRedemptions / kpi.activeUsersInRange) * 100)) : 0;
-  // Flag when redemptions > active users so the UI can show "X claims per member" instead of a %.
   const redemptionsPerMember = kpi.activeUsersInRange > 0
     ? parseFloat((kpi.totalRedemptions / kpi.activeUsersInRange).toFixed(1)) : 0;
   const visibleAlerts    = intelligence.alerts.filter((_, i) => !dismissedAlerts.has(i));
@@ -492,22 +464,24 @@ const AnalyticsTab = () => {
 
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
-    <div className="space-y-4 sm:space-y-6 p-3 sm:p-6 bg-gray-50 min-h-screen">
+    <div className={`space-y-4 sm:space-y-6 p-3 sm:p-6 min-h-screen transition-colors duration-300 ${isDark ? 'bg-gray-900' : 'bg-gray-50'}`}>
 
       {/* ─── Header ───────────────────────────────────────────────────────── */}
       <div className="flex flex-col sm:flex-row sm:flex-wrap sm:justify-between sm:items-center gap-3">
         <div className="min-w-0">
-          <h2 className="text-xl sm:text-2xl font-extrabold text-gray-900 tracking-tight">📊 Analytics</h2>
-          <p className="text-[11px] sm:text-xs text-gray-400 mt-0.5 truncate">{rangeLabel}</p>
+          <h2 className={`text-xl sm:text-2xl font-extrabold tracking-tight ${isDark ? 'text-gray-100' : 'text-gray-900'}`}>📊 Analytics</h2>
+          <p className={`text-[11px] sm:text-xs mt-0.5 truncate ${isDark ? 'text-gray-400' : 'text-gray-400'}`}>{rangeLabel}</p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
           {/* Date presets */}
-          <div className="flex gap-0.5 sm:gap-1 bg-white border border-gray-200 rounded-xl p-1 flex-wrap">
+          <div className={`flex gap-0.5 sm:gap-1 border rounded-xl p-1 flex-wrap ${isDark ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'}`}>
             {DATE_PRESETS.map(({ label, days }) => (
               <button key={days} onClick={() => handlePreset(days)}
                 className={`px-2 sm:px-3 py-1 sm:py-1.5 text-[11px] sm:text-xs font-bold rounded-lg transition ${
-                  activePreset === days ? 'bg-emerald-600 text-white shadow-sm' : 'text-gray-500 hover:bg-gray-100'
+                  activePreset === days
+                    ? 'bg-emerald-600 text-white shadow-sm'
+                    : isDark ? 'text-gray-400 hover:bg-gray-700' : 'text-gray-500 hover:bg-gray-100'
                 }`}>
                 {label}
               </button>
@@ -515,11 +489,10 @@ const AnalyticsTab = () => {
           </div>
 
           <button onClick={loadAnalytics} title="Refresh"
-            className="p-2 rounded-xl border border-gray-200 bg-white text-gray-500 hover:bg-gray-50 transition text-sm shrink-0">
+            className={`p-2 rounded-xl border text-sm shrink-0 transition ${isDark ? 'border-gray-700 bg-gray-800 text-gray-400 hover:bg-gray-700' : 'border-gray-200 bg-white text-gray-500 hover:bg-gray-50'}`}>
             🔄
           </button>
 
-          {/* Export — icon-only on xs, with label on sm+ */}
           <button onClick={handleExport}
             className="flex items-center gap-1.5 bg-emerald-600 text-white px-3 sm:px-4 py-2 rounded-xl hover:bg-emerald-700 transition text-xs sm:text-sm font-bold shrink-0">
             <span>📤</span>
@@ -529,16 +502,16 @@ const AnalyticsTab = () => {
       </div>
 
       {/* ─── Tab bar ──────────────────────────────────────────────────────── */}
-      {/* Mobile (<640px): icon + 3-char abbreviation. sm+: full label. */}
-      <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-1 sm:p-1.5 flex gap-0.5 sm:gap-1">
+      <div className={`rounded-2xl border shadow-sm p-1 sm:p-1.5 flex gap-0.5 sm:gap-1 ${isDark ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-100'}`}>
         {TABS.map(tab => (
           <button key={tab.id} onClick={() => setActiveTab(tab.id)}
             title={tab.label}
             className={`relative flex flex-col sm:flex-row items-center justify-center gap-0 sm:gap-2 px-1.5 sm:px-4 py-2 sm:py-2.5 rounded-xl font-semibold transition-all flex-1 min-w-0 ${
-              activeTab === tab.id ? 'bg-emerald-600 text-white shadow-sm' : 'text-gray-500 hover:bg-gray-100'
+              activeTab === tab.id
+                ? 'bg-emerald-600 text-white shadow-sm'
+                : isDark ? 'text-gray-400 hover:bg-gray-700' : 'text-gray-500 hover:bg-gray-100'
             }`}>
             <span className="text-base leading-none">{tab.icon}</span>
-            {/* Full label sm+, 3-char abbreviation on mobile */}
             <span className="hidden sm:inline text-sm whitespace-nowrap">{tab.label}</span>
             <span className="sm:hidden text-[9px] font-bold mt-0.5 leading-none">{tab.label.slice(0, 3)}</span>
             {tab.badge != null && (
@@ -556,12 +529,12 @@ const AnalyticsTab = () => {
       {activeTab === 'overview' && (
         <div className="space-y-4 sm:space-y-6">
 
-          {/* KPI cards — 2 cols xs, 4 cols sm, 7 cols lg */}
+          {/* KPI cards */}
           <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2 sm:gap-3">
             {[
-              { icon:'🗑️', value: fmtNum(kpi.totalSubmissions),   label:'Drop-offs',          bg:'from-green-50 to-emerald-50',  txt:'text-emerald-700', sub:`${kpi.avgDaily}/day avg` },
-              { icon:'👥', value: fmtNum(kpi.activeUsersInRange), label:'Active Members',      bg:'from-blue-50 to-sky-50',       txt:'text-sky-700',     sub:`${participationPct}% of total` },
-              { icon:'🌍', value: fmtNum(kpi.totalUsers),         label:'Total Members',       bg:'from-cyan-50 to-teal-50',      txt:'text-teal-700',    sub:'registered accounts' },
+              { icon:'🗑️', value: fmtNum(kpi.totalSubmissions),   label:'Drop-offs',      bg:'from-green-50 to-emerald-50',  txt:'text-emerald-700', sub:`${kpi.avgDaily}/day avg` },
+              { icon:'👥', value: fmtNum(kpi.activeUsersInRange), label:'Active Members', bg:'from-blue-50 to-sky-50',       txt:'text-sky-700',     sub:`${participationPct}% of total` },
+              { icon:'🌍', value: fmtNum(kpi.totalUsers),         label:'Total Members',  bg:'from-cyan-50 to-teal-50',      txt:'text-teal-700',    sub:'registered accounts' },
               { icon:'⚖️', value: kpi.hasWeightData ? fmtKg(kpi.totalKg) : fmtNum(kpi.totalSubmissions),
                 label: kpi.hasWeightData ? 'Waste Collected' : 'Drop-offs',
                 bg:'from-lime-50 to-green-50', txt:'text-green-700',
@@ -569,9 +542,9 @@ const AnalyticsTab = () => {
                 trend: kgPredictions.hasEnoughKgBase && kgPredictions.kgGrowthRate && kgPredictions.kgGrowthRate !== '—' ? kgPredictions.kgGrowthRate : undefined,
                 trendPos: kgPredictions.kgTrendDirection === 'upward',
               },
-              { icon:'🎁', value: fmtNum(kpi.totalRedemptions),   label:'Rewards Claimed',     bg:'from-orange-50 to-amber-50',   txt:'text-amber-700',   sub:'this period' },
-              { icon:'🚨', value: fmtNum(kpi.totalReports),       label:'Violations',          bg:'from-rose-50 to-pink-50',      txt:'text-rose-700',    sub: kpi.totalReports >= 5 ? '⚠ check needed' : 'no issues' },
-              { icon:'📅', value: activePreset,                   label:'Days Selected',       bg:'from-violet-50 to-purple-50',  txt:'text-purple-700',  sub: rangeLabel },
+              { icon:'🎁', value: fmtNum(kpi.totalRedemptions),  label:'Rewards Claimed', bg:'from-orange-50 to-amber-50',  txt:'text-amber-700',   sub:'this period' },
+              { icon:'🚨', value: fmtNum(kpi.totalReports),      label:'Violations',      bg:'from-rose-50 to-pink-50',     txt:'text-rose-700',    sub: kpi.totalReports >= 5 ? '⚠ check needed' : 'no issues' },
+              { icon:'📅', value: activePreset,                  label:'Days Selected',   bg:'from-violet-50 to-purple-50', txt:'text-purple-700',  sub: rangeLabel },
             ].map(c => <KpiCard key={c.label} {...c} />)}
           </div>
 
@@ -579,7 +552,6 @@ const AnalyticsTab = () => {
           <Card>
             <SecHead icon="❤️" title="Program Health Check"
               subtitle="How well your waste collection program is running. Each score is out of 100." />
-            {/* xs: 2 col, sm: 3 col, lg: 5 col */}
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2 sm:gap-3 lg:gap-4">
               <HealthPill label="Participation"    score={intelligence.healthScores.participation    ?? 0} sub="% members active" />
               <HealthPill label="Reward Use"       score={intelligence.healthScores.rewardEngagement ?? 0} sub="% claiming rewards" />
@@ -587,7 +559,7 @@ const AnalyticsTab = () => {
               <HealthPill label="Retention"        score={intelligence.healthScores.retention        ?? 0} sub="returning members" />
               <HealthPill label="Data Depth"       score={intelligence.healthScores.forecast         ?? 0} sub="trend data available" />
             </div>
-            <p className="text-[10px] sm:text-[11px] text-gray-400 mt-3 sm:mt-4">
+            <p className={`text-[10px] sm:text-[11px] mt-3 sm:mt-4 ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>
               💡 70+ = Good · 40–70 = Fair · Below 40 = Needs attention
             </p>
           </Card>
@@ -605,11 +577,11 @@ const AnalyticsTab = () => {
               ) : (
                 <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap shrink-0">
                   <input type="number" value={goalInput} onChange={e => setGoalInput(e.target.value)}
-                    className="w-16 sm:w-20 border border-gray-300 rounded-lg px-2 py-1 text-sm text-center" />
+                    className={`w-16 sm:w-20 border rounded-lg px-2 py-1 text-sm text-center ${isDark ? 'bg-gray-700 border-gray-600 text-gray-100' : 'bg-white border-gray-300 text-gray-900'}`} />
                   <button onClick={() => { setMonthlyGoal(Math.max(1, Number(goalInput))); setEditingGoal(false); }}
                     className="text-xs bg-emerald-600 text-white px-2.5 sm:px-3 py-1.5 rounded-lg font-bold">Save</button>
                   <button onClick={() => setEditingGoal(false)}
-                    className="text-xs text-gray-400 px-2 py-1.5">Cancel</button>
+                    className={`text-xs px-2 py-1.5 ${isDark ? 'text-gray-400' : 'text-gray-400'}`}>Cancel</button>
                 </div>
               )}
             </div>
@@ -617,7 +589,7 @@ const AnalyticsTab = () => {
               label={`Drop-offs this period (goal: ${fmtNum(monthlyGoal)})`} color="#3b82f6" />
           </Card>
 
-          {/* Summary strip — 2 cols xs, 4 cols sm */}
+          {/* Summary strip */}
           {kpi.totalSubmissions > 0 && (
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-3">
               <ProgressCard
@@ -675,24 +647,80 @@ const AnalyticsTab = () => {
             if (allCards.length === 0) return null;
 
             const STYLES = {
-              critical: { bar:'bg-red-500',    border:'border-red-200',    bg:'bg-red-50',     tag:'bg-red-100 text-red-700',       tagText:'🔴 Urgent'   },
-              warning:  { bar:'bg-amber-400',  border:'border-amber-200',  bg:'bg-amber-50',   tag:'bg-amber-100 text-amber-700',   tagText:'🟡 Warning'  },
-              success:  { bar:'bg-emerald-500',border:'border-emerald-200',bg:'bg-emerald-50', tag:'bg-emerald-100 text-emerald-700',tagText:'🟢 Good news'},
-              info:     { bar:'bg-blue-400',   border:'border-blue-200',   bg:'bg-blue-50',    tag:'bg-blue-100 text-blue-700',     tagText:'🔵 Info'     },
-              reward:   { bar:'bg-violet-500', border:'border-violet-200', bg:'bg-violet-50',  tag:'bg-violet-100 text-violet-700', tagText:'🎁 Reward'   },
-              schedule: { bar:'bg-sky-500',    border:'border-sky-200',    bg:'bg-sky-50',     tag:'bg-sky-100 text-sky-700',       tagText:'📅 Schedule' },
-              insight:  { bar:'bg-gray-300',   border:'border-gray-200',   bg:'bg-gray-50',    tag:'bg-gray-100 text-gray-600',     tagText:'💡 Insight'  },
+              critical: {
+                bar: 'bg-red-500',
+                border: isDark ? 'border-red-900' : 'border-red-200',
+                bg: isDark ? 'bg-red-900/20' : 'bg-red-50',
+                tag: isDark ? 'bg-red-900/50 text-red-300' : 'bg-red-100 text-red-700',
+                tagText: '🔴 Urgent',
+                title: isDark ? 'text-red-300' : 'text-gray-800',
+                msg: isDark ? 'text-red-400' : 'text-gray-600',
+              },
+              warning: {
+                bar: 'bg-amber-400',
+                border: isDark ? 'border-amber-900' : 'border-amber-200',
+                bg: isDark ? 'bg-amber-900/20' : 'bg-amber-50',
+                tag: isDark ? 'bg-amber-900/50 text-amber-300' : 'bg-amber-100 text-amber-700',
+                tagText: '🟡 Warning',
+                title: isDark ? 'text-amber-300' : 'text-gray-800',
+                msg: isDark ? 'text-amber-400' : 'text-gray-600',
+              },
+              success: {
+                bar: 'bg-emerald-500',
+                border: isDark ? 'border-emerald-900' : 'border-emerald-200',
+                bg: isDark ? 'bg-emerald-900/20' : 'bg-emerald-50',
+                tag: isDark ? 'bg-emerald-900/50 text-emerald-300' : 'bg-emerald-100 text-emerald-700',
+                tagText: '🟢 Good news',
+                title: isDark ? 'text-emerald-300' : 'text-gray-800',
+                msg: isDark ? 'text-emerald-400' : 'text-gray-600',
+              },
+              info: {
+                bar: 'bg-blue-400',
+                border: isDark ? 'border-blue-900' : 'border-blue-200',
+                bg: isDark ? 'bg-blue-900/20' : 'bg-blue-50',
+                tag: isDark ? 'bg-blue-900/50 text-blue-300' : 'bg-blue-100 text-blue-700',
+                tagText: '🔵 Info',
+                title: isDark ? 'text-blue-300' : 'text-gray-800',
+                msg: isDark ? 'text-blue-400' : 'text-gray-600',
+              },
+              reward: {
+                bar: 'bg-violet-500',
+                border: isDark ? 'border-violet-900' : 'border-violet-200',
+                bg: isDark ? 'bg-violet-900/20' : 'bg-violet-50',
+                tag: isDark ? 'bg-violet-900/50 text-violet-300' : 'bg-violet-100 text-violet-700',
+                tagText: '🎁 Reward',
+                title: isDark ? 'text-violet-300' : 'text-gray-800',
+                msg: isDark ? 'text-violet-400' : 'text-gray-600',
+              },
+              schedule: {
+                bar: 'bg-sky-500',
+                border: isDark ? 'border-sky-900' : 'border-sky-200',
+                bg: isDark ? 'bg-sky-900/20' : 'bg-sky-50',
+                tag: isDark ? 'bg-sky-900/50 text-sky-300' : 'bg-sky-100 text-sky-700',
+                tagText: '📅 Schedule',
+                title: isDark ? 'text-sky-300' : 'text-gray-800',
+                msg: isDark ? 'text-sky-400' : 'text-gray-600',
+              },
+              insight: {
+                bar: 'bg-gray-400',
+                border: isDark ? 'border-gray-700' : 'border-gray-200',
+                bg: isDark ? 'bg-gray-800' : 'bg-gray-50',
+                tag: isDark ? 'bg-gray-700 text-gray-300' : 'bg-gray-100 text-gray-600',
+                tagText: '💡 Insight',
+                title: isDark ? 'text-gray-200' : 'text-gray-800',
+                msg: isDark ? 'text-gray-400' : 'text-gray-600',
+              },
             };
 
             return (
               <Card className="!p-0 overflow-hidden">
                 {/* Header */}
-                <div className="flex items-center justify-between px-4 sm:px-5 py-3 sm:py-4 border-b border-gray-100 gap-2 flex-wrap">
+                <div className={`flex items-center justify-between px-4 sm:px-5 py-3 sm:py-4 border-b gap-2 flex-wrap ${isDark ? 'border-gray-700' : 'border-gray-100'}`}>
                   <div className="flex items-center gap-2">
                     <span className="text-lg sm:text-xl">💡</span>
                     <div>
-                      <p className="text-xs sm:text-sm font-extrabold text-gray-900">What you should know</p>
-                      <p className="text-[10px] sm:text-xs text-gray-400">{allCards.length} item{allCards.length !== 1 ? 's' : ''} need attention</p>
+                      <p className={`text-xs sm:text-sm font-extrabold ${isDark ? 'text-gray-100' : 'text-gray-900'}`}>What you should know</p>
+                      <p className={`text-[10px] sm:text-xs ${isDark ? 'text-gray-400' : 'text-gray-400'}`}>{allCards.length} item{allCards.length !== 1 ? 's' : ''} need attention</p>
                     </div>
                   </div>
                   <div className="flex items-center gap-2 flex-wrap">
@@ -719,12 +747,12 @@ const AnalyticsTab = () => {
                         <span className="text-base sm:text-lg shrink-0 ml-1 mt-0.5">{card.icon}</span>
                         <div className="flex-1 min-w-0 space-y-1">
                           <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${s.tag}`}>{s.tagText}</span>
-                          {card.title && <p className="text-[11px] sm:text-xs font-bold text-gray-800">{card.title}</p>}
-                          <p className="text-[11px] sm:text-xs text-gray-600 leading-relaxed">{card.message}</p>
+                          {card.title && <p className={`text-[11px] sm:text-xs font-bold ${s.title}`}>{card.title}</p>}
+                          <p className={`text-[11px] sm:text-xs leading-relaxed ${s.msg}`}>{card.message}</p>
                         </div>
                         {card._kind === 'alert' && (
                           <button onClick={() => setDismissedAlerts(prev => new Set([...prev, card._alertIdx]))}
-                            className="shrink-0 text-gray-300 hover:text-gray-500 text-xl leading-none self-start">×</button>
+                            className={`shrink-0 text-xl leading-none self-start ${isDark ? 'text-gray-600 hover:text-gray-400' : 'text-gray-300 hover:text-gray-500'}`}>×</button>
                         )}
                       </div>
                     );
@@ -749,7 +777,7 @@ const AnalyticsTab = () => {
             <AreaLineChart data={trendData} color="#10b981" height={200} yLabel="Drop-offs"
               emptyText="No drop-offs recorded in this period." />
             {trendData.length > 0 && (
-              <p className="text-[10px] sm:text-[11px] text-gray-400 mt-2 sm:mt-3">
+              <p className={`text-[10px] sm:text-[11px] mt-2 sm:mt-3 ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>
                 💬 Dashed line = your average. Peaks and valleys show busy and quiet periods.
               </p>
             )}
@@ -759,34 +787,37 @@ const AnalyticsTab = () => {
             <Card>
               <SecHead icon="🔮" title="What to Expect in the Next 30 Days"
                 subtitle="Based on your recent drop-off pattern." />
-              {/* 1 col xs, 3 col sm */}
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4 sm:mb-5">
-                <div className="bg-indigo-50 border border-indigo-100 rounded-2xl p-3 sm:p-4 text-center">
-                  <p className="text-2xl sm:text-3xl font-extrabold text-indigo-700 leading-none">{fmtNum(predictions.nextMonth)}</p>
-                  <p className="text-[11px] sm:text-xs font-semibold text-indigo-500 mt-1">Estimated drop-offs next month</p>
-                  <p className="text-[10px] text-gray-400 mt-1">~{fmtNum(predictions.avgPerDay)}/day</p>
+                <div className={`border rounded-2xl p-3 sm:p-4 text-center ${isDark ? 'bg-indigo-900/30 border-indigo-800' : 'bg-indigo-50 border-indigo-100'}`}>
+                  <p className={`text-2xl sm:text-3xl font-extrabold leading-none ${isDark ? 'text-indigo-300' : 'text-indigo-700'}`}>{fmtNum(predictions.nextMonth)}</p>
+                  <p className={`text-[11px] sm:text-xs font-semibold mt-1 ${isDark ? 'text-indigo-400' : 'text-indigo-500'}`}>Estimated drop-offs next month</p>
+                  <p className={`text-[10px] mt-1 ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>~{fmtNum(predictions.avgPerDay)}/day</p>
                 </div>
-                <div className={`${predictions.trendDirection === 'upward' ? 'bg-emerald-50 border-emerald-100' : 'bg-rose-50 border-rose-100'} border rounded-2xl p-3 sm:p-4 text-center`}>
-                  <p className={`text-2xl sm:text-3xl font-extrabold leading-none ${predictions.trendDirection === 'upward' ? 'text-emerald-600' : 'text-rose-600'}`}>
+                <div className={`border rounded-2xl p-3 sm:p-4 text-center ${
+                  predictions.trendDirection === 'upward'
+                    ? isDark ? 'bg-emerald-900/30 border-emerald-800' : 'bg-emerald-50 border-emerald-100'
+                    : isDark ? 'bg-rose-900/30 border-rose-800' : 'bg-rose-50 border-rose-100'
+                }`}>
+                  <p className={`text-2xl sm:text-3xl font-extrabold leading-none ${predictions.trendDirection === 'upward' ? (isDark ? 'text-emerald-400' : 'text-emerald-600') : (isDark ? 'text-rose-400' : 'text-rose-600')}`}>
                     {predictions.hasEnoughBaseData ? predictions.growthRate : '—'}
                   </p>
-                  <p className={`text-[11px] sm:text-xs font-semibold mt-1 ${predictions.trendDirection === 'upward' ? 'text-emerald-500' : 'text-rose-500'}`}>
+                  <p className={`text-[11px] sm:text-xs font-semibold mt-1 ${predictions.trendDirection === 'upward' ? (isDark ? 'text-emerald-500' : 'text-emerald-500') : (isDark ? 'text-rose-500' : 'text-rose-500')}`}>
                     {predictions.hasEnoughBaseData ? 'vs previous period' : 'not enough prior data'}
                   </p>
                 </div>
-                <div className="bg-gray-50 border border-gray-100 rounded-2xl p-3 sm:p-4 text-center">
-                  <p className="text-sm sm:text-base font-extrabold text-gray-700 leading-snug">{predictions.trendSentence}</p>
-                  <p className="text-[10px] text-gray-400 mt-2">Confidence: <strong>{predictions.confidence}</strong></p>
+                <div className={`border rounded-2xl p-3 sm:p-4 text-center ${isDark ? 'bg-gray-800 border-gray-700' : 'bg-gray-50 border-gray-100'}`}>
+                  <p className={`text-sm sm:text-base font-extrabold leading-snug ${isDark ? 'text-gray-200' : 'text-gray-700'}`}>{predictions.trendSentence}</p>
+                  <p className={`text-[10px] mt-2 ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>Confidence: <strong>{predictions.confidence}</strong></p>
                 </div>
               </div>
               <ForecastChart history={trendData} forecastValue={predictions.nextMonth || 0} color="#10b981" height={180} />
-              <p className="text-[10px] text-gray-400 mt-2 leading-relaxed">
+              <p className={`text-[10px] mt-2 leading-relaxed ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>
                 ℹ️ Forecast is based on your recent daily average (second half of selected period). A longer date range gives a more reliable estimate. Confidence: <strong>{predictions.confidence}</strong>.
               </p>
             </Card>
           )}
 
-          {/* ── KG DESCRIPTIVE ANALYTICS ────────────────────────────────── */}
+          {/* KG DESCRIPTIVE ANALYTICS */}
           {kpi.hasWeightData ? (
             <>
               {/* Summary cards */}
@@ -796,33 +827,38 @@ const AnalyticsTab = () => {
                     icon: '⚖️', label: 'Total Waste Collected',
                     value: fmtKg(kpi.totalKg),
                     sub: `across ${kpi.totalSubmissions} drop-offs`,
-                    bg: 'from-teal-50 to-cyan-50', txt: 'text-teal-700',
+                    bg: 'from-teal-50 to-cyan-50', darkBg: 'from-teal-900/30 to-cyan-900/20',
+                    txt: 'text-teal-700', darkTxt: 'text-teal-300',
                   },
                   {
                     icon: '📦', label: 'Avg per Drop-off',
                     value: fmtKg(avgKgPerSub),
                     sub: 'weight per visit',
-                    bg: 'from-sky-50 to-blue-50', txt: 'text-sky-700',
+                    bg: 'from-sky-50 to-blue-50', darkBg: 'from-sky-900/30 to-blue-900/20',
+                    txt: 'text-sky-700', darkTxt: 'text-sky-300',
                   },
                   {
                     icon: '📅', label: 'Avg per Day',
                     value: fmtKg(kgPredictions.avgKgPerDay),
                     sub: 'on active days',
-                    bg: 'from-indigo-50 to-violet-50', txt: 'text-indigo-700',
+                    bg: 'from-indigo-50 to-violet-50', darkBg: 'from-indigo-900/30 to-violet-900/20',
+                    txt: 'text-indigo-700', darkTxt: 'text-indigo-300',
                   },
                   {
                     icon: '📈', label: 'Next 30 Days (est.)',
                     value: kgPredictions.nextMonthKg != null ? fmtKg(kgPredictions.nextMonthKg) : '—',
                     sub: kgPredictions.kgGrowthRate ? `trend: ${kgPredictions.kgGrowthRate}` : 'not enough data',
                     bg: kgPredictions.kgTrendDirection === 'upward' ? 'from-emerald-50 to-green-50' : 'from-rose-50 to-pink-50',
+                    darkBg: kgPredictions.kgTrendDirection === 'upward' ? 'from-emerald-900/30 to-green-900/20' : 'from-rose-900/30 to-pink-900/20',
                     txt: kgPredictions.kgTrendDirection === 'upward' ? 'text-emerald-700' : 'text-rose-700',
+                    darkTxt: kgPredictions.kgTrendDirection === 'upward' ? 'text-emerald-300' : 'text-rose-300',
                   },
                 ].map(c => (
-                  <div key={c.label} className={`bg-gradient-to-br ${c.bg} rounded-2xl p-3 sm:p-4 border border-white shadow-sm`}>
+                  <div key={c.label} className={`bg-gradient-to-br ${isDark ? c.darkBg : c.bg} rounded-2xl p-3 sm:p-4 border ${isDark ? 'border-gray-700' : 'border-white'} shadow-sm`}>
                     <span className="text-xl">{c.icon}</span>
-                    <p className={`text-xl sm:text-2xl font-extrabold ${c.txt} leading-none mt-1 break-all`}>{c.value}</p>
-                    <p className="text-[11px] sm:text-xs font-bold text-gray-700 mt-1">{c.label}</p>
-                    <p className="text-[10px] text-gray-400">{c.sub}</p>
+                    <p className={`text-xl sm:text-2xl font-extrabold ${isDark ? c.darkTxt : c.txt} leading-none mt-1 break-all`}>{c.value}</p>
+                    <p className={`text-[11px] sm:text-xs font-bold mt-1 ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>{c.label}</p>
+                    <p className={`text-[10px] ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>{c.sub}</p>
                   </div>
                 ))}
               </div>
@@ -832,7 +868,7 @@ const AnalyticsTab = () => {
                 <SecHead icon="⚖️" title="Waste Weight Collected Over Time"
                   subtitle="How many kilograms of waste were brought in each day (or week). Taller peaks = more waste collected." />
                 <WasteKgChart data={kgTrendData} height={200} />
-                <p className="text-[10px] sm:text-[11px] text-gray-400 mt-2">
+                <p className={`text-[10px] sm:text-[11px] mt-2 ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>
                   💬 Use the toggle above the chart to compare weight (kg) side by side with number of drop-offs.
                 </p>
               </Card>
@@ -843,34 +879,34 @@ const AnalyticsTab = () => {
                   <SecHead icon="🔮" title="How Much Waste Will Be Collected Next Month?"
                     subtitle="Based on your recent daily average — this is an estimate, not a guarantee." />
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4 sm:mb-5">
-                    <div className="bg-teal-50 border border-teal-100 rounded-2xl p-3 sm:p-4 text-center">
-                      <p className="text-2xl sm:text-3xl font-extrabold text-teal-700 leading-none">
+                    <div className={`border rounded-2xl p-3 sm:p-4 text-center ${isDark ? 'bg-teal-900/30 border-teal-800' : 'bg-teal-50 border-teal-100'}`}>
+                      <p className={`text-2xl sm:text-3xl font-extrabold leading-none ${isDark ? 'text-teal-300' : 'text-teal-700'}`}>
                         {fmtKg(kgPredictions.nextMonthKg)}
                       </p>
-                      <p className="text-[11px] sm:text-xs font-semibold text-teal-500 mt-1">Estimated kg next month</p>
-                      <p className="text-[10px] text-gray-400 mt-1">~{fmtKg(kgPredictions.avgKgPerDay)}/day</p>
+                      <p className={`text-[11px] sm:text-xs font-semibold mt-1 ${isDark ? 'text-teal-400' : 'text-teal-500'}`}>Estimated kg next month</p>
+                      <p className={`text-[10px] mt-1 ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>~{fmtKg(kgPredictions.avgKgPerDay)}/day</p>
                     </div>
-                    <div className={`${kgPredictions.kgTrendDirection === 'upward' ? 'bg-emerald-50 border-emerald-100' : 'bg-rose-50 border-rose-100'} border rounded-2xl p-3 sm:p-4 text-center`}>
-                      <p className={`text-2xl sm:text-3xl font-extrabold leading-none ${kgPredictions.kgTrendDirection === 'upward' ? 'text-emerald-600' : 'text-rose-600'}`}>
+                    <div className={`border rounded-2xl p-3 sm:p-4 text-center ${
+                      kgPredictions.kgTrendDirection === 'upward'
+                        ? isDark ? 'bg-emerald-900/30 border-emerald-800' : 'bg-emerald-50 border-emerald-100'
+                        : isDark ? 'bg-rose-900/30 border-rose-800' : 'bg-rose-50 border-rose-100'
+                    }`}>
+                      <p className={`text-2xl sm:text-3xl font-extrabold leading-none ${kgPredictions.kgTrendDirection === 'upward' ? (isDark ? 'text-emerald-400' : 'text-emerald-600') : (isDark ? 'text-rose-400' : 'text-rose-600')}`}>
                         {kgPredictions.hasEnoughKgBase ? kgPredictions.kgGrowthRate : '—'}
                       </p>
-                      <p className={`text-[11px] sm:text-xs font-semibold mt-1 ${kgPredictions.kgTrendDirection === 'upward' ? 'text-emerald-500' : 'text-rose-500'}`}>
+                      <p className={`text-[11px] sm:text-xs font-semibold mt-1 ${kgPredictions.kgTrendDirection === 'upward' ? (isDark ? 'text-emerald-500' : 'text-emerald-500') : (isDark ? 'text-rose-500' : 'text-rose-500')}`}>
                         {kgPredictions.hasEnoughKgBase ? 'vs previous period' : 'not enough prior data'}
                       </p>
-                      <p className="text-[10px] text-gray-400 mt-1">
+                      <p className={`text-[10px] mt-1 ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>
                         {kgPredictions.kgTrendDirection === 'upward' ? '📈 Increasing' : '📉 Decreasing'}
                       </p>
                     </div>
-                    <div className="bg-gray-50 border border-gray-100 rounded-2xl p-3 sm:p-4 text-center">
-                      <p className="text-sm sm:text-base font-extrabold text-gray-700 leading-snug">{kgPredictions.kgTrendSentence}</p>
-                      <p className="text-[10px] text-gray-400 mt-2">Confidence: <strong>{kgPredictions.kgConfidence}</strong></p>
+                    <div className={`border rounded-2xl p-3 sm:p-4 text-center ${isDark ? 'bg-gray-800 border-gray-700' : 'bg-gray-50 border-gray-100'}`}>
+                      <p className={`text-sm sm:text-base font-extrabold leading-snug ${isDark ? 'text-gray-200' : 'text-gray-700'}`}>{kgPredictions.kgTrendSentence}</p>
+                      <p className={`text-[10px] mt-2 ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>Confidence: <strong>{kgPredictions.kgConfidence}</strong></p>
                     </div>
                   </div>
-                  <KgForecastChart
-                    kgHistory={kgTrendData}
-                    forecastKg={kgPredictions.nextMonthKg}
-                    height={180}
-                  />
+                  <KgForecastChart kgHistory={kgTrendData} forecastKg={kgPredictions.nextMonthKg} height={180} />
                 </Card>
               )}
 
@@ -887,13 +923,13 @@ const AnalyticsTab = () => {
                       return (
                         <div key={w.name}>
                           <div className="flex items-center justify-between mb-1">
-                            <span className="text-[11px] sm:text-xs font-semibold text-gray-700 truncate max-w-[55%]">{w.name}</span>
+                            <span className={`text-[11px] sm:text-xs font-semibold truncate max-w-[55%] ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>{w.name}</span>
                             <div className="flex items-center gap-2">
-                              <span className="text-[10px] text-gray-400">{w.value} drop-off{w.value !== 1 ? 's' : ''}</span>
-                              <span className={`text-[11px] sm:text-xs font-bold text-teal-700`}>{fmtKg(w.kg)}</span>
+                              <span className={`text-[10px] ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>{w.value} drop-off{w.value !== 1 ? 's' : ''}</span>
+                              <span className={`text-[11px] sm:text-xs font-bold ${isDark ? 'text-teal-400' : 'text-teal-700'}`}>{fmtKg(w.kg)}</span>
                             </div>
                           </div>
-                          <div className="h-2.5 bg-gray-100 rounded-full overflow-hidden">
+                          <div className={`h-2.5 rounded-full overflow-hidden ${isDark ? 'bg-gray-700' : 'bg-gray-100'}`}>
                             <div className={`h-full ${barColors[i % barColors.length]} rounded-full transition-all duration-700`}
                               style={{ width: `${Math.max(pct, 2)}%` }} />
                           </div>
@@ -901,7 +937,7 @@ const AnalyticsTab = () => {
                       );
                     })}
                   </div>
-                  <p className="text-[10px] sm:text-[11px] text-gray-400 mt-3">
+                  <p className={`text-[10px] sm:text-[11px] mt-3 ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>
                     💬 Knowing which type weighs the most helps you plan collection vehicle capacity and recycler partnerships.
                   </p>
                 </Card>
@@ -913,12 +949,12 @@ const AnalyticsTab = () => {
               <div className="flex flex-col sm:flex-row items-start gap-3 sm:gap-4">
                 <span className="text-3xl shrink-0">⚖️</span>
                 <div>
-                  <p className="text-sm font-bold text-gray-800 mb-1">Weight data is not being recorded</p>
-                  <p className="text-xs text-gray-500 leading-relaxed">
+                  <p className={`text-sm font-bold mb-1 ${isDark ? 'text-gray-200' : 'text-gray-800'}`}>Weight data is not being recorded</p>
+                  <p className={`text-xs leading-relaxed ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
                     Right now you can only see the <strong>number</strong> of drop-offs, not how many kilograms of waste were collected.
                     To unlock weight charts and forecasts, make sure members enter the weight of their waste when submitting.
                   </p>
-                  <p className="text-[11px] text-gray-400 mt-2">
+                  <p className={`text-[11px] mt-2 ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>
                     💡 Even an approximate weight (e.g. "1 bag ≈ 2 kg") gives you much more useful data than counts alone.
                   </p>
                 </div>
@@ -926,7 +962,8 @@ const AnalyticsTab = () => {
             </Card>
           )}
 
-          {/* Waste type charts — stacked on mobile, side-by-side on lg */}          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
+          {/* Waste type charts */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
             <Card>
               <SecHead icon="🥧" title="Waste Types — Share of Total"
                 subtitle="Hover or tap a slice to see the percentage." />
@@ -945,7 +982,7 @@ const AnalyticsTab = () => {
             </Card>
           </div>
 
-          {/* Heatmap + hours — stacked on mobile, side-by-side on lg */}
+          {/* Heatmap + hours */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
             <Card>
               <SecHead icon="🗓️" title="Which Days Are Busiest?"
@@ -968,26 +1005,31 @@ const AnalyticsTab = () => {
       {activeTab === 'community' && (
         <div className="space-y-4 sm:space-y-6">
 
-          {/* Retention summary cards — 1 col xs, 3 col sm */}
+          {/* Retention summary cards */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-4">
             {[
               { icon:'👤', label:'New Members Active', value: fmtNum(intelligence.retentionStats?.newUsers ?? 0),
-                sub:'First time submitting', bg:'from-blue-50 to-sky-50', txt:'text-sky-700',
+                sub:'First time submitting',
+                bg:'from-blue-50 to-sky-50', darkBg:'from-blue-900/30 to-sky-900/20',
+                txt:'text-sky-700', darkTxt:'text-sky-300',
                 meaning:'New members who participated this period.' },
-              { icon:'🔄', label:'Returning Members',  value: fmtNum(intelligence.retentionStats?.returning ?? 0),
+              { icon:'🔄', label:'Returning Members', value: fmtNum(intelligence.retentionStats?.returning ?? 0),
                 sub:`${intelligence.retentionStats?.retentionRate ?? 0}% retention`,
-                bg:'from-emerald-50 to-teal-50', txt:'text-emerald-700',
+                bg:'from-emerald-50 to-teal-50', darkBg:'from-emerald-900/30 to-teal-900/20',
+                txt:'text-emerald-700', darkTxt:'text-emerald-300',
                 meaning:'Members who came back after participating before.' },
-              { icon:'😴', label:'Inactive Members',   value: fmtNum(Math.max(0, kpi.totalUsers - kpi.activeUsersInRange)),
-                sub:'No drop-offs this period', bg:'from-rose-50 to-pink-50', txt:'text-rose-600',
+              { icon:'😴', label:'Inactive Members', value: fmtNum(Math.max(0, kpi.totalUsers - kpi.activeUsersInRange)),
+                sub:'No drop-offs this period',
+                bg:'from-rose-50 to-pink-50', darkBg:'from-rose-900/30 to-pink-900/20',
+                txt:'text-rose-600', darkTxt:'text-rose-300',
                 meaning:'A re-engagement reminder could bring these back.' },
             ].map(c => (
-              <div key={c.label} className={`bg-gradient-to-br ${c.bg} rounded-2xl p-4 sm:p-5 border border-white shadow-sm space-y-1`}>
+              <div key={c.label} className={`bg-gradient-to-br ${isDark ? c.darkBg : c.bg} rounded-2xl p-4 sm:p-5 border ${isDark ? 'border-gray-700' : 'border-white'} shadow-sm space-y-1`}>
                 <span className="text-xl sm:text-2xl">{c.icon}</span>
-                <p className={`text-2xl sm:text-3xl font-extrabold ${c.txt} leading-none break-all`}>{c.value}</p>
-                <p className="text-xs sm:text-sm font-bold text-gray-700">{c.label}</p>
-                <p className="text-[11px] sm:text-xs text-gray-400">{c.sub}</p>
-                <p className="text-[10px] sm:text-[11px] text-gray-500 bg-white/60 rounded-lg px-2 py-1 mt-1">💬 {c.meaning}</p>
+                <p className={`text-2xl sm:text-3xl font-extrabold leading-none break-all ${isDark ? c.darkTxt : c.txt}`}>{c.value}</p>
+                <p className={`text-xs sm:text-sm font-bold ${isDark ? 'text-gray-200' : 'text-gray-700'}`}>{c.label}</p>
+                <p className={`text-[11px] sm:text-xs ${isDark ? 'text-gray-400' : 'text-gray-400'}`}>{c.sub}</p>
+                <p className={`text-[10px] sm:text-[11px] rounded-lg px-2 py-1 mt-1 ${isDark ? 'bg-gray-700/60 text-gray-300' : 'bg-white/60 text-gray-500'}`}>💬 {c.meaning}</p>
               </div>
             ))}
           </div>
@@ -1001,7 +1043,7 @@ const AnalyticsTab = () => {
               label={`Returning members (${intelligence.retentionStats?.retentionRate ?? 0}% retention)`}
               color="#10b981"
             />
-            <p className="text-[10px] sm:text-[11px] text-gray-400 mt-2 sm:mt-3">
+            <p className={`text-[10px] sm:text-[11px] mt-2 sm:mt-3 ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>
               💬 Aim for 60%+ retention. If low, try a loyalty reward or "Welcome back" challenge.
             </p>
           </Card>
@@ -1017,19 +1059,19 @@ const AnalyticsTab = () => {
                     const medals = ['🥇','🥈','🥉'];
                     const pct    = topUsers[0].totalPoints > 0 ? Math.round((u.totalPoints / topUsers[0].totalPoints) * 100) : 0;
                     return (
-                      <div key={u.userId} className="flex items-center gap-2 sm:gap-3 p-2 sm:p-2.5 rounded-xl hover:bg-gray-50 transition">
+                      <div key={u.userId} className={`flex items-center gap-2 sm:gap-3 p-2 sm:p-2.5 rounded-xl transition ${isDark ? 'hover:bg-gray-700' : 'hover:bg-gray-50'}`}>
                         <span className="w-6 sm:w-7 text-center shrink-0">
                           {i < 3 ? <span className="text-sm sm:text-base">{medals[i]}</span>
-                            : <span className="text-xs text-gray-400 font-bold">#{i + 1}</span>}
+                            : <span className={`text-xs font-bold ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>#{i + 1}</span>}
                         </span>
                         <div className="flex-1 min-w-0">
                           <div className="flex justify-between items-center mb-0.5">
-                            <span className="text-xs sm:text-sm font-semibold text-gray-700 truncate">
+                            <span className={`text-xs sm:text-sm font-semibold truncate ${isDark ? 'text-gray-200' : 'text-gray-700'}`}>
                               {u.displayName || `Member …${u.userId.slice(-6)}`}
                             </span>
-                            <span className="text-xs font-bold text-emerald-700 ml-2 shrink-0">{fmtNum(u.totalPoints)} pts</span>
+                            <span className={`text-xs font-bold ml-2 shrink-0 ${isDark ? 'text-emerald-400' : 'text-emerald-700'}`}>{fmtNum(u.totalPoints)} pts</span>
                           </div>
-                          <div className="h-1.5 sm:h-2 bg-gray-100 rounded-full overflow-hidden">
+                          <div className={`h-1.5 sm:h-2 rounded-full overflow-hidden ${isDark ? 'bg-gray-700' : 'bg-gray-100'}`}>
                             <div className="h-full bg-gradient-to-r from-emerald-400 to-teal-500 rounded-full transition-all duration-500"
                               style={{ width: `${pct}%` }} />
                           </div>
@@ -1058,7 +1100,7 @@ const AnalyticsTab = () => {
             </Card>
           ) : (
             <>
-              {/* ── KPI Summary strip ─────────────────────────────── */}
+              {/* KPI Summary strip */}
               {(() => {
                 const totalClaims     = rewardTrends.reduce((s, r) => s + r.count, 0);
                 const totalPointsSpent = allRedemptions.reduce((s, r) => s + Number(r.pointsSpent || r.cost || r.points || 0), 0);
@@ -1069,29 +1111,29 @@ const AnalyticsTab = () => {
                 return (
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-3">
                     {[
-                      { label: 'Total Claims',        value: fmtNum(totalClaims),                            icon: '🎁', bg: 'from-amber-50 to-orange-50',   txt: 'text-amber-700',   sub: `across ${rewardTrends.length} reward${rewardTrends.length !== 1 ? 's' : ''}` },
-                      { label: 'Unique Redeemers',    value: fmtNum(uniqueRedeemers),                        icon: '🧑', bg: 'from-violet-50 to-purple-50',   txt: 'text-violet-700',  sub: `${claimRate}% of active members` },
-                      { label: 'Claims per Member',   value: claimsPerMember,                                icon: '🔄', bg: 'from-sky-50 to-blue-50',        txt: 'text-sky-700',     sub: 'avg among redeemers' },
-                      { label: 'Avg Cost per Claim',  value: totalPointsSpent > 0 ? `${fmtNum(avgCostPerClaim)} pts` : '—', icon: '💰', bg: 'from-emerald-50 to-teal-50', txt: 'text-emerald-700', sub: totalPointsSpent > 0 ? `${fmtNum(totalPointsSpent)} pts total` : 'no points data' },
-                    ].map(({ label, value, icon, bg, txt, sub }) => (
-                      <div key={label} className={`bg-gradient-to-br ${bg} rounded-2xl p-3 sm:p-4 border border-white shadow-sm`}>
+                      { label: 'Total Claims',       value: fmtNum(totalClaims),  icon: '🎁', bg: 'from-amber-50 to-orange-50',   darkBg: 'from-amber-900/30 to-orange-900/20', txt: 'text-amber-700',   darkTxt: 'text-amber-300',   sub: `across ${rewardTrends.length} reward${rewardTrends.length !== 1 ? 's' : ''}` },
+                      { label: 'Unique Redeemers',   value: fmtNum(uniqueRedeemers), icon: '🧑', bg: 'from-violet-50 to-purple-50', darkBg: 'from-violet-900/30 to-purple-900/20', txt: 'text-violet-700',  darkTxt: 'text-violet-300',  sub: `${claimRate}% of active members` },
+                      { label: 'Claims per Member',  value: claimsPerMember,      icon: '🔄', bg: 'from-sky-50 to-blue-50',       darkBg: 'from-sky-900/30 to-blue-900/20',     txt: 'text-sky-700',     darkTxt: 'text-sky-300',     sub: 'avg among redeemers' },
+                      { label: 'Avg Cost per Claim', value: totalPointsSpent > 0 ? `${fmtNum(avgCostPerClaim)} pts` : '—', icon: '💰', bg: 'from-emerald-50 to-teal-50', darkBg: 'from-emerald-900/30 to-teal-900/20', txt: 'text-emerald-700', darkTxt: 'text-emerald-300', sub: totalPointsSpent > 0 ? `${fmtNum(totalPointsSpent)} pts total` : 'no points data' },
+                    ].map(({ label, value, icon, bg, darkBg, txt, darkTxt, sub }) => (
+                      <div key={label} className={`bg-gradient-to-br ${isDark ? darkBg : bg} rounded-2xl p-3 sm:p-4 border ${isDark ? 'border-gray-700' : 'border-white'} shadow-sm`}>
                         <span className="text-xl">{icon}</span>
-                        <p className={`text-xl sm:text-2xl font-extrabold ${txt} leading-none mt-1 break-all`}>{value}</p>
-                        <p className="text-[10px] sm:text-[11px] font-bold text-gray-700 mt-1 leading-tight">{label}</p>
-                        <p className="text-[10px] text-gray-400">{sub}</p>
+                        <p className={`text-xl sm:text-2xl font-extrabold leading-none mt-1 break-all ${isDark ? darkTxt : txt}`}>{value}</p>
+                        <p className={`text-[11px] sm:text-xs font-bold mt-1 ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>{label}</p>
+                        <p className={`text-[10px] ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>{sub}</p>
                       </div>
                     ))}
                   </div>
                 );
               })()}
 
-              {/* ── Forecast summary strip ────────────────────────── */}
+              {/* Forecast summary strip */}
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-3">
                 {[
                   { label: 'Expected next 30 days', value: fmtNum(rewardPredictions.summary.totalNext30 || '—'), icon: '🔮', bg: 'from-indigo-900 to-purple-900', txt: 'text-white', sub: 'Based on 12-week trend', subTxt: 'text-indigo-300' },
                   { label: 'Growing in popularity', value: rewardPredictions.summary.risingCount ?? '—',         icon: '📈', bg: 'from-emerald-500 to-teal-600',  txt: 'text-white', sub: 'More claims than before',  subTxt: 'text-emerald-100' },
                   { label: 'Losing interest',       value: rewardPredictions.summary.decliningCount ?? '—',      icon: '📉', bg: 'from-rose-500 to-pink-600',      txt: 'text-white', sub: 'Fewer claims than before', subTxt: 'text-rose-100' },
-                  { label: 'All-time claims',       value: fmtNum(rewardTrends.reduce((s, r) => s + r.count, 0)), icon: '🎁', bg: 'from-amber-400 to-orange-500', txt: 'text-white', sub: `across ${rewardTrends.length} rewards`, subTxt: 'text-amber-100' },
+                  { label: 'All-time claims',       value: fmtNum(rewardTrends.reduce((s, r) => s + r.count, 0)), icon: '🎁', bg: 'from-amber-400 to-orange-500',  txt: 'text-white', sub: `across ${rewardTrends.length} rewards`, subTxt: 'text-amber-100' },
                 ].map(({ label, value, icon, bg, txt, sub, subTxt }) => (
                   <div key={label} className={`bg-gradient-to-br ${bg} rounded-2xl p-3 sm:p-4 border border-white/10 shadow-md`}>
                     <div className="text-xl sm:text-2xl mb-1.5 sm:mb-2">{icon}</div>
@@ -1102,41 +1144,41 @@ const AnalyticsTab = () => {
                 ))}
               </div>
 
-              {/* ── Hot & Fading ──────────────────────────────────── */}
+              {/* Hot & Fading */}
               {(rewardPredictions.summary.hotReward || rewardPredictions.summary.fadingReward) && (
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
                   {rewardPredictions.summary.hotReward && (
-                    <div className="relative overflow-hidden bg-gradient-to-br from-emerald-50 to-teal-50 border border-emerald-200 rounded-2xl p-4 sm:p-5">
+                    <div className={`relative overflow-hidden border rounded-2xl p-4 sm:p-5 ${isDark ? 'bg-gradient-to-br from-emerald-900/40 to-teal-900/30 border-emerald-800' : 'bg-gradient-to-br from-emerald-50 to-teal-50 border-emerald-200'}`}>
                       <div className="absolute -right-4 -top-4 text-5xl sm:text-6xl opacity-10 select-none">🔥</div>
-                      <p className="text-[10px] font-extrabold text-emerald-600 uppercase tracking-widest mb-1">🔥 Hottest reward</p>
-                      <p className="text-sm sm:text-base font-extrabold text-gray-900 truncate">{rewardPredictions.summary.hotReward.rewardName}</p>
-                      <p className="text-xs text-gray-500 mt-1">
+                      <p className={`text-[10px] font-extrabold uppercase tracking-widest mb-1 ${isDark ? 'text-emerald-400' : 'text-emerald-600'}`}>🔥 Hottest reward</p>
+                      <p className={`text-sm sm:text-base font-extrabold truncate ${isDark ? 'text-gray-100' : 'text-gray-900'}`}>{rewardPredictions.summary.hotReward.rewardName}</p>
+                      <p className={`text-xs mt-1 ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
                         {rewardPredictions.summary.hotReward.velocityPct > 0
-                          ? <><span className="font-bold text-emerald-600">+{rewardPredictions.summary.hotReward.velocityPct.toFixed(1)}%</span> growth in recent weeks</>
-                          : <span className="text-gray-400">Recently gaining traction</span>
+                          ? <><span className={`font-bold ${isDark ? 'text-emerald-400' : 'text-emerald-600'}`}>+{rewardPredictions.summary.hotReward.velocityPct.toFixed(1)}%</span> growth in recent weeks</>
+                          : <span className={isDark ? 'text-gray-500' : 'text-gray-400'}>Recently gaining traction</span>
                         }
                       </p>
-                      <p className="text-xs text-gray-500 mt-0.5">
-                        ~<span className="font-bold text-emerald-700">{fmtNum(rewardPredictions.summary.hotReward.next30Days)} claims</span> expected next 30 days
+                      <p className={`text-xs mt-0.5 ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
+                        ~<span className={`font-bold ${isDark ? 'text-emerald-400' : 'text-emerald-700'}`}>{fmtNum(rewardPredictions.summary.hotReward.next30Days)} claims</span> expected next 30 days
                       </p>
-                      <p className="text-[10px] sm:text-[11px] text-gray-400 mt-2">💬 Make sure you have enough stock to meet demand.</p>
+                      <p className={`text-[10px] sm:text-[11px] mt-2 ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>💬 Make sure you have enough stock to meet demand.</p>
                     </div>
                   )}
                   {rewardPredictions.summary.fadingReward && (
-                    <div className="relative overflow-hidden bg-gradient-to-br from-rose-50 to-pink-50 border border-rose-200 rounded-2xl p-4 sm:p-5">
+                    <div className={`relative overflow-hidden border rounded-2xl p-4 sm:p-5 ${isDark ? 'bg-gradient-to-br from-rose-900/40 to-pink-900/30 border-rose-800' : 'bg-gradient-to-br from-rose-50 to-pink-50 border-rose-200'}`}>
                       <div className="absolute -right-4 -top-4 text-5xl sm:text-6xl opacity-10 select-none">❄️</div>
-                      <p className="text-[10px] font-extrabold text-rose-600 uppercase tracking-widest mb-1">❄️ Losing popularity</p>
-                      <p className="text-sm sm:text-base font-extrabold text-gray-900 truncate">{rewardPredictions.summary.fadingReward.rewardName}</p>
-                      <p className="text-xs text-gray-500 mt-1">
-                        Down <span className="font-bold text-rose-600">{Math.abs(rewardPredictions.summary.fadingReward.velocityPct).toFixed(1)}%</span> vs last month
+                      <p className={`text-[10px] font-extrabold uppercase tracking-widest mb-1 ${isDark ? 'text-rose-400' : 'text-rose-600'}`}>❄️ Losing popularity</p>
+                      <p className={`text-sm sm:text-base font-extrabold truncate ${isDark ? 'text-gray-100' : 'text-gray-900'}`}>{rewardPredictions.summary.fadingReward.rewardName}</p>
+                      <p className={`text-xs mt-1 ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
+                        Down <span className={`font-bold ${isDark ? 'text-rose-400' : 'text-rose-600'}`}>{Math.abs(rewardPredictions.summary.fadingReward.velocityPct).toFixed(1)}%</span> vs last month
                       </p>
-                      <p className="text-[10px] sm:text-[11px] text-gray-400 mt-2">💬 Consider refreshing or replacing this reward.</p>
+                      <p className={`text-[10px] sm:text-[11px] mt-2 ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>💬 Consider refreshing or replacing this reward.</p>
                     </div>
                   )}
                 </div>
               )}
 
-              {/* ── 12-week timeline ─────────────────────────────── */}
+              {/* 12-week timeline */}
               <Card>
                 <SecHead icon="📅" title="Reward Claims — Last 12 Weeks"
                   subtitle="Claims per week. Purple dot = forecast for next week." />
@@ -1150,7 +1192,7 @@ const AnalyticsTab = () => {
                 })()}
               </Card>
 
-              {/* ── Top Redeemers ────────────────────────────────── */}
+              {/* Top Redeemers */}
               {(() => {
                 const redeemCountMap = {};
                 allRedemptions.forEach(r => {
@@ -1160,15 +1202,10 @@ const AnalyticsTab = () => {
                   redeemCountMap[r.userId].points += Number(r.pointsSpent || r.cost || r.points || 0);
                   if (!redeemCountMap[r.userId].name) redeemCountMap[r.userId].name = r.userName || r.userDisplayName || null;
                 });
-                // Enrich with full user profile for accurate display names
                 const userLookup = {};
                 allUsers.forEach(u => { userLookup[u.id] = u.username || u.displayName || u.name || null; });
                 const topRedeemers = Object.entries(redeemCountMap)
-                  .map(([userId, v]) => ({
-                    userId,
-                    ...v,
-                    name: userLookup[userId] || v.name || null,
-                  }))
+                  .map(([userId, v]) => ({ userId, ...v, name: userLookup[userId] || v.name || null }))
                   .sort((a, b) => b.count - a.count)
                   .slice(0, 8);
                 if (topRedeemers.length === 0) return null;
@@ -1183,21 +1220,21 @@ const AnalyticsTab = () => {
                         const pct = maxCount > 0 ? Math.round((u.count / maxCount) * 100) : 0;
                         const displayName = u.name || 'Unknown Member';
                         return (
-                          <div key={u.userId} className="flex items-center gap-2 sm:gap-3 p-2 sm:p-2.5 rounded-xl hover:bg-gray-50 transition">
+                          <div key={u.userId} className={`flex items-center gap-2 sm:gap-3 p-2 sm:p-2.5 rounded-xl transition ${isDark ? 'hover:bg-gray-700' : 'hover:bg-gray-50'}`}>
                             <span className="w-6 sm:w-7 text-center shrink-0">
                               {i < 3
                                 ? <span className="text-sm sm:text-base">{medals[i]}</span>
-                                : <span className="text-xs text-gray-400 font-bold">#{i + 1}</span>}
+                                : <span className={`text-xs font-bold ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>#{i + 1}</span>}
                             </span>
                             <div className="flex-1 min-w-0">
                               <div className="flex justify-between items-center mb-0.5">
-                                <span className="text-xs sm:text-sm font-semibold text-gray-700 truncate">{displayName}</span>
+                                <span className={`text-xs sm:text-sm font-semibold truncate ${isDark ? 'text-gray-200' : 'text-gray-700'}`}>{displayName}</span>
                                 <div className="flex items-center gap-2 ml-2 shrink-0">
-                                  {u.points > 0 && <span className="text-[10px] text-gray-400">{fmtNum(u.points)} pts</span>}
-                                  <span className="text-xs font-bold text-amber-700">{u.count} claim{u.count !== 1 ? 's' : ''}</span>
+                                  {u.points > 0 && <span className={`text-[10px] ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>{fmtNum(u.points)} pts</span>}
+                                  <span className={`text-xs font-bold ${isDark ? 'text-amber-400' : 'text-amber-700'}`}>{u.count} claim{u.count !== 1 ? 's' : ''}</span>
                                 </div>
                               </div>
-                              <div className="h-1.5 sm:h-2 bg-gray-100 rounded-full overflow-hidden">
+                              <div className={`h-1.5 sm:h-2 rounded-full overflow-hidden ${isDark ? 'bg-gray-700' : 'bg-gray-100'}`}>
                                 <div className="h-full bg-gradient-to-r from-amber-400 to-orange-500 rounded-full transition-all duration-500"
                                   style={{ width: `${pct}%` }} />
                               </div>
@@ -1206,14 +1243,14 @@ const AnalyticsTab = () => {
                         );
                       })}
                     </div>
-                    <p className="text-[10px] sm:text-[11px] text-gray-400 mt-3">
+                    <p className={`text-[10px] sm:text-[11px] mt-3 ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>
                       💬 Heavy redeemers are your most motivated members. Consider exclusive rewards or recognition for them.
                     </p>
                   </Card>
                 );
               })()}
 
-              {/* ── Redemption timing patterns ───────────────────── */}
+              {/* Redemption timing patterns */}
               {(() => {
                 const rdowCounts  = Array(7).fill(0);
                 const rhourCounts = Array(24).fill(0);
@@ -1237,9 +1274,8 @@ const AnalyticsTab = () => {
                     <SecHead icon="⏱️" title="When Do Members Redeem Rewards?"
                       subtitle="Day-of-week and hour patterns — send targeted reminders at peak times." />
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
-                      {/* Day of week bars */}
                       <div>
-                        <p className="text-[11px] sm:text-xs font-semibold text-gray-500 mb-2">By day of week</p>
+                        <p className={`text-[11px] sm:text-xs font-semibold mb-2 ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>By day of week</p>
                         <div className="space-y-1.5">
                           {DOW_SHORT_LOCAL.map((day, i) => {
                             const val = rdowCounts[i];
@@ -1247,46 +1283,45 @@ const AnalyticsTab = () => {
                             const isPeak = i === peakDow;
                             return (
                               <div key={day} className="flex items-center gap-2">
-                                <span className={`text-[10px] w-7 shrink-0 font-semibold ${isPeak ? 'text-amber-600' : 'text-gray-500'}`}>{day}</span>
-                                <div className="flex-1 h-2 bg-gray-100 rounded-full overflow-hidden">
-                                  <div className={`h-full rounded-full transition-all duration-500 ${isPeak ? 'bg-amber-400' : 'bg-amber-200'}`}
+                                <span className={`text-[10px] w-7 shrink-0 font-semibold ${isPeak ? (isDark ? 'text-amber-400' : 'text-amber-600') : (isDark ? 'text-gray-500' : 'text-gray-500')}`}>{day}</span>
+                                <div className={`flex-1 h-2 rounded-full overflow-hidden ${isDark ? 'bg-gray-700' : 'bg-gray-100'}`}>
+                                  <div className={`h-full rounded-full transition-all duration-500 ${isPeak ? 'bg-amber-400' : (isDark ? 'bg-amber-700' : 'bg-amber-200')}`}
                                     style={{ width: `${Math.max(pct, val > 0 ? 3 : 0)}%` }} />
                                 </div>
-                                <span className={`text-[10px] w-5 text-right shrink-0 font-bold ${isPeak ? 'text-amber-700' : 'text-gray-400'}`}>{val}</span>
+                                <span className={`text-[10px] w-5 text-right shrink-0 font-bold ${isPeak ? (isDark ? 'text-amber-400' : 'text-amber-700') : (isDark ? 'text-gray-500' : 'text-gray-400')}`}>{val}</span>
                               </div>
                             );
                           })}
                         </div>
-                        <p className="text-[10px] text-gray-400 mt-2">Peak day: <strong className="text-amber-700">{['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][peakDow]}</strong></p>
+                        <p className={`text-[10px] mt-2 ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>Peak day: <strong className={isDark ? 'text-amber-400' : 'text-amber-700'}>{['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][peakDow]}</strong></p>
                       </div>
-                      {/* Hour of day condensed bars */}
                       <div>
-                        <p className="text-[11px] sm:text-xs font-semibold text-gray-500 mb-2">By hour of day</p>
+                        <p className={`text-[11px] sm:text-xs font-semibold mb-2 ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>By hour of day</p>
                         <div className="flex items-end gap-px h-16" title="Hourly redemption distribution">
                           {rhourCounts.map((v, i) => {
                             const h = maxHour > 0 ? Math.max(v > 0 ? 3 : 0, (v / maxHour) * 60) : 0;
                             const isPeak = i === peakHour;
                             return (
-                              <div key={i} className={`flex-1 rounded-sm ${isPeak ? 'bg-amber-400' : 'bg-amber-200'}`}
+                              <div key={i} className={`flex-1 rounded-sm ${isPeak ? 'bg-amber-400' : (isDark ? 'bg-amber-700' : 'bg-amber-200')}`}
                                 style={{ height: h, alignSelf: 'flex-end' }}
                                 title={`${i}:00 — ${v} claim${v !== 1 ? 's' : ''}`} />
                             );
                           })}
                         </div>
-                        <div className="flex justify-between text-[9px] text-gray-400 mt-1">
+                        <div className={`flex justify-between text-[9px] mt-1 ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>
                           <span>12am</span><span>6am</span><span>12pm</span><span>6pm</span><span>11pm</span>
                         </div>
-                        <p className="text-[10px] text-gray-400 mt-2">Peak hour: <strong className="text-amber-700">{hr}:00 {ampm}</strong></p>
+                        <p className={`text-[10px] mt-2 ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>Peak hour: <strong className={isDark ? 'text-amber-400' : 'text-amber-700'}>{hr}:00 {ampm}</strong></p>
                       </div>
                     </div>
-                    <p className="text-[10px] sm:text-[11px] text-gray-400 mt-3 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
+                    <p className={`text-[10px] sm:text-[11px] mt-3 border rounded-lg px-3 py-2 ${isDark ? 'bg-amber-900/20 border-amber-800 text-amber-300' : 'bg-amber-50 border-amber-100 text-gray-600'}`}>
                       💡 Schedule push notifications 1 hour before <strong>{hr}:00 {ampm}</strong> on <strong>{['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][peakDow]}s</strong> for the best redemption response.
                     </p>
                   </Card>
                 );
               })()}
 
-              {/* ── Category breakdown ───────────────────────────── */}
+              {/* Category breakdown */}
               {(() => {
                 const catMap = {};
                 allRedemptions.forEach(r => {
@@ -1313,14 +1348,14 @@ const AnalyticsTab = () => {
                         return (
                           <div key={cat.name}>
                             <div className="flex items-center justify-between mb-1">
-                              <span className="text-[11px] sm:text-xs font-semibold text-gray-700 truncate max-w-[55%] capitalize">{cat.name}</span>
+                              <span className={`text-[11px] sm:text-xs font-semibold truncate max-w-[55%] capitalize ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>{cat.name}</span>
                               <div className="flex items-center gap-2">
-                                {cat.points > 0 && <span className="text-[10px] text-gray-400">{fmtNum(cat.points)} pts</span>}
-                                <span className="text-[10px] text-gray-400">{sharePct}%</span>
-                                <span className="text-[11px] sm:text-xs font-bold text-violet-700">{cat.count} claim{cat.count !== 1 ? 's' : ''}</span>
+                                {cat.points > 0 && <span className={`text-[10px] ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>{fmtNum(cat.points)} pts</span>}
+                                <span className={`text-[10px] ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>{sharePct}%</span>
+                                <span className={`text-[11px] sm:text-xs font-bold ${isDark ? 'text-violet-400' : 'text-violet-700'}`}>{cat.count} claim{cat.count !== 1 ? 's' : ''}</span>
                               </div>
                             </div>
-                            <div className="h-2.5 bg-gray-100 rounded-full overflow-hidden">
+                            <div className={`h-2.5 rounded-full overflow-hidden ${isDark ? 'bg-gray-700' : 'bg-gray-100'}`}>
                               <div className={`h-full ${catColors[i % catColors.length]} rounded-full transition-all duration-700`}
                                 style={{ width: `${Math.max(pct, 2)}%` }} />
                             </div>
@@ -1328,21 +1363,15 @@ const AnalyticsTab = () => {
                         );
                       })}
                     </div>
-                    <p className="text-[10px] sm:text-[11px] text-gray-400 mt-3">
+                    <p className={`text-[10px] sm:text-[11px] mt-3 ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>
                       💬 Add more rewards in your most popular categories to keep members engaged.
                     </p>
                   </Card>
                 );
               })()}
 
-              {/* ── Stock health vs demand ───────────────────────── */}
+              {/* Stock health vs demand */}
               {(() => {
-                // Cross-reference rewardPredictions with live reward stock data from rewardTrends
-                const stockAlerts = (rewardPredictions.perReward || []).filter(r => {
-                  // Find the matching redemption entry to get stock info embedded in the trend data
-                  const trend = rewardTrends.find(t => t.rewardName === r.rewardName);
-                  return trend?.stock != null && trend.stock <= 5 && r.next30Days > 0;
-                });
                 const rewardsWithLowStock = rewardTrends.filter(r => r.stock != null && r.stock === 0);
                 const rewardsWithWarnStock = rewardTrends.filter(r => r.stock != null && r.stock > 0 && r.stock <= 5);
                 if (rewardsWithLowStock.length === 0 && rewardsWithWarnStock.length === 0) return null;
@@ -1354,12 +1383,12 @@ const AnalyticsTab = () => {
                       {rewardsWithLowStock.map(r => {
                         const pred = (rewardPredictions.perReward || []).find(p => p.rewardName === r.rewardName);
                         return (
-                          <div key={r.rewardName} className="flex items-start gap-2 p-3 rounded-xl bg-red-50 border border-red-200">
+                          <div key={r.rewardName} className={`flex items-start gap-2 p-3 rounded-xl border ${isDark ? 'bg-red-900/20 border-red-800' : 'bg-red-50 border-red-200'}`}>
                             <span className="text-base shrink-0">🚫</span>
                             <div className="flex-1 min-w-0">
-                              <p className="text-[11px] sm:text-xs font-bold text-red-800 truncate">{r.rewardName} — Out of stock</p>
+                              <p className={`text-[11px] sm:text-xs font-bold truncate ${isDark ? 'text-red-300' : 'text-red-800'}`}>{r.rewardName} — Out of stock</p>
                               {pred && pred.next30Days > 0 && (
-                                <p className="text-[10px] text-red-600 mt-0.5">~{pred.next30Days} claims expected next 30 days but stock is 0. Restock immediately.</p>
+                                <p className={`text-[10px] mt-0.5 ${isDark ? 'text-red-400' : 'text-red-600'}`}>~{pred.next30Days} claims expected next 30 days but stock is 0. Restock immediately.</p>
                               )}
                             </div>
                           </div>
@@ -1368,42 +1397,49 @@ const AnalyticsTab = () => {
                       {rewardsWithWarnStock.map(r => {
                         const pred = (rewardPredictions.perReward || []).find(p => p.rewardName === r.rewardName);
                         return (
-                          <div key={r.rewardName} className="flex items-start gap-2 p-3 rounded-xl bg-amber-50 border border-amber-200">
+                          <div key={r.rewardName} className={`flex items-start gap-2 p-3 rounded-xl border ${isDark ? 'bg-amber-900/20 border-amber-800' : 'bg-amber-50 border-amber-200'}`}>
                             <span className="text-base shrink-0">⚠️</span>
                             <div className="flex-1 min-w-0">
-                              <p className="text-[11px] sm:text-xs font-bold text-amber-800 truncate">{r.rewardName} — Only {r.stock} left</p>
+                              <p className={`text-[11px] sm:text-xs font-bold truncate ${isDark ? 'text-amber-300' : 'text-amber-800'}`}>{r.rewardName} — Only {r.stock} left</p>
                               {pred && pred.next30Days > 0 && (
-                                <p className="text-[10px] text-amber-700 mt-0.5">Predicted {pred.next30Days} claims next 30 days — stock may not cover demand.</p>
+                                <p className={`text-[10px] mt-0.5 ${isDark ? 'text-amber-400' : 'text-amber-700'}`}>Predicted {pred.next30Days} claims next 30 days — stock may not cover demand.</p>
                               )}
                             </div>
                           </div>
                         );
                       })}
                     </div>
-                    <p className="text-[10px] sm:text-[11px] text-gray-400 mt-3">
+                    <p className={`text-[10px] sm:text-[11px] mt-3 ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>
                       💬 Go to the Rewards tab → Adjust Inventory to restock before running out.
                     </p>
                   </Card>
                 );
               })()}
 
-              {/* ── Per-reward forecast cards ────────────────────── */}
+              {/* Per-reward forecast cards */}
               <div>
                 <div className="flex items-start gap-2 mb-3 sm:mb-4">
                   <span className="text-xl shrink-0">🎯</span>
                   <div>
-                    <p className="text-xs sm:text-sm font-bold text-gray-900">Forecast for Each Reward</p>
-                    <p className="text-[11px] sm:text-xs text-gray-400">12 weeks of history. Darker bars = more recent weeks.</p>
+                    <p className={`text-xs sm:text-sm font-bold ${isDark ? 'text-gray-100' : 'text-gray-900'}`}>Forecast for Each Reward</p>
+                    <p className={`text-[11px] sm:text-xs ${isDark ? 'text-gray-400' : 'text-gray-400'}`}>12 weeks of history. Darker bars = more recent weeks.</p>
                   </div>
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
                   {(rewardPredictions.perReward || []).map(r => {
                     const tColor = r.trend === 'rising' ? '#10b981' : r.trend === 'declining' ? '#ef4444' : '#6b7280';
-                    const tBg    = r.trend === 'rising' ? 'bg-emerald-50 border-emerald-100' : r.trend === 'declining' ? 'bg-rose-50 border-rose-100' : 'bg-gray-50 border-gray-100';
+                    const tBg    = r.trend === 'rising'
+                      ? isDark ? 'bg-emerald-900/30 border-emerald-800' : 'bg-emerald-50 border-emerald-100'
+                      : r.trend === 'declining'
+                        ? isDark ? 'bg-rose-900/30 border-rose-800' : 'bg-rose-50 border-rose-100'
+                        : isDark ? 'bg-gray-800 border-gray-700' : 'bg-gray-50 border-gray-100';
                     const tLabel = r.trend === 'rising' ? '📈 Growing' : r.trend === 'declining' ? '📉 Declining' : '➡️ Stable';
-                    const tTxt   = r.trend === 'rising' ? 'text-emerald-700' : r.trend === 'declining' ? 'text-rose-600' : 'text-gray-500';
+                    const tTxt   = r.trend === 'rising'
+                      ? isDark ? 'text-emerald-400' : 'text-emerald-700'
+                      : r.trend === 'declining'
+                        ? isDark ? 'text-rose-400' : 'text-rose-600'
+                        : isDark ? 'text-gray-400' : 'text-gray-500';
                     const maxBar = Math.max(...r.series, 1);
-                    // Find matching stock info
                     const matchedTrend = rewardTrends.find(t => t.rewardName === r.rewardName);
                     const stock = matchedTrend?.stock;
                     const stockWarn = stock != null && stock <= 5;
@@ -1412,13 +1448,13 @@ const AnalyticsTab = () => {
                       <div key={r.rewardName} className={`rounded-2xl border p-3 sm:p-4 ${tBg} space-y-2 sm:space-y-3`}>
                         <div className="flex items-start justify-between gap-2">
                           <div className="min-w-0">
-                            <p className="text-xs sm:text-sm font-extrabold text-gray-900 truncate" title={r.rewardName}>{r.rewardName}</p>
-                            <p className="text-[10px] text-gray-400">{r.totalCount} all-time claims</p>
+                            <p className={`text-xs sm:text-sm font-extrabold truncate ${isDark ? 'text-gray-100' : 'text-gray-900'}`} title={r.rewardName}>{r.rewardName}</p>
+                            <p className={`text-[10px] ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>{r.totalCount} all-time claims</p>
                           </div>
                           <div className="flex flex-col items-end gap-1 shrink-0">
-                            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${tTxt} bg-white/70`}>{tLabel}</span>
+                            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${tTxt} ${isDark ? 'bg-gray-700/60' : 'bg-white/70'}`}>{tLabel}</span>
                             {stock != null && (
-                              <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${stock === 0 ? 'bg-red-100 text-red-600' : stockWarn ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'}`}>
+                              <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${stock === 0 ? (isDark ? 'bg-red-900/50 text-red-300' : 'bg-red-100 text-red-600') : stockWarn ? (isDark ? 'bg-amber-900/50 text-amber-300' : 'bg-amber-100 text-amber-700') : (isDark ? 'bg-emerald-900/50 text-emerald-300' : 'bg-emerald-100 text-emerald-700')}`}>
                                 {stock === 0 ? '🚫 Out of stock' : `📦 ${stock} left`}
                               </span>
                             )}
@@ -1427,7 +1463,7 @@ const AnalyticsTab = () => {
 
                         {/* Mini sparkline bars */}
                         <div>
-                          <p className="text-[10px] text-gray-400 mb-1">Weekly claims (last 12 weeks + forecast)</p>
+                          <p className={`text-[10px] mb-1 ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>Weekly claims (last 12 weeks + forecast)</p>
                           <div className="flex items-end gap-px h-8 sm:h-10">
                             {r.series.map((v, i) => {
                               const h = maxBar > 0 ? Math.max(2, (v / maxBar) * 36) : 2;
@@ -1441,7 +1477,7 @@ const AnalyticsTab = () => {
                               style={{ height: Math.max(2, Math.min(40, (r.next30Days / 4.3 / maxBar) * 40)), alignSelf: 'flex-end', background: '#8b5cf6' }}
                               title={`Forecast: ~${Math.round(r.next30Days / 4.3)}`} />
                           </div>
-                          <div className="flex justify-between text-[9px] text-gray-400 mt-0.5">
+                          <div className={`flex justify-between text-[9px] mt-0.5 ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>
                             <span>12 wks ago</span>
                             <span className="text-violet-500 font-bold">▶ forecast</span>
                           </div>
@@ -1449,20 +1485,19 @@ const AnalyticsTab = () => {
 
                         <div className="grid grid-cols-3 gap-1.5 sm:gap-2 text-center">
                           {[
-                            { val: fmtNum(r.next30Days), lbl: 'Next 30 days', cls: 'text-gray-900' },
-                            { val: `${r.velocityPct >= 0 ? '+' : ''}${r.velocityPct}%`, lbl: 'Recent change', cls: r.velocityPct >= 0 ? 'text-emerald-600' : 'text-rose-500' },
-                            { val: r.confidence, lbl: 'Accuracy', cls: r.confidence === 'High' ? 'text-emerald-600' : r.confidence === 'Medium' ? 'text-amber-500' : 'text-gray-400' },
+                            { val: fmtNum(r.next30Days), lbl: 'Next 30 days', cls: isDark ? 'text-gray-100' : 'text-gray-900' },
+                            { val: `${r.velocityPct >= 0 ? '+' : ''}${r.velocityPct}%`, lbl: 'Recent change', cls: r.velocityPct >= 0 ? (isDark ? 'text-emerald-400' : 'text-emerald-600') : (isDark ? 'text-rose-400' : 'text-rose-500') },
+                            { val: r.confidence, lbl: 'Accuracy', cls: r.confidence === 'High' ? (isDark ? 'text-emerald-400' : 'text-emerald-600') : r.confidence === 'Medium' ? (isDark ? 'text-amber-400' : 'text-amber-500') : (isDark ? 'text-gray-400' : 'text-gray-400') },
                           ].map(({ val, lbl, cls }) => (
-                            <div key={lbl} className="bg-white/70 rounded-xl p-1.5 sm:p-2">
+                            <div key={lbl} className={`rounded-xl p-1.5 sm:p-2 ${isDark ? 'bg-gray-700/50' : 'bg-white/70'}`}>
                               <p className={`text-xs sm:text-sm font-extrabold ${cls}`}>{val}</p>
-                              <p className="text-[9px] text-gray-400 leading-tight">{lbl}</p>
+                              <p className={`text-[9px] leading-tight ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>{lbl}</p>
                             </div>
                           ))}
                         </div>
 
-                        {/* Stock vs demand warning inline */}
                         {stock != null && stockWarn && r.next30Days > 0 && (
-                          <p className={`text-[10px] font-semibold px-2 py-1 rounded-lg ${stock === 0 ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'}`}>
+                          <p className={`text-[10px] font-semibold px-2 py-1 rounded-lg ${stock === 0 ? (isDark ? 'bg-red-900/40 text-red-300' : 'bg-red-100 text-red-700') : (isDark ? 'bg-amber-900/40 text-amber-300' : 'bg-amber-100 text-amber-700')}`}>
                             {stock === 0
                               ? `🚨 Out of stock but ~${r.next30Days} claims expected. Restock now!`
                               : `⚠️ Only ${stock} units left vs ~${r.next30Days} predicted claims.`}
@@ -1474,7 +1509,7 @@ const AnalyticsTab = () => {
                 </div>
               </div>
 
-              {/* ── Velocity chart ───────────────────────────────── */}
+              {/* Velocity chart */}
               {(rewardPredictions.perReward || []).length > 1 && (
                 <Card>
                   <SecHead icon="⚡" title="Which Rewards Are Growing vs Fading?"
@@ -1483,7 +1518,7 @@ const AnalyticsTab = () => {
                 </Card>
               )}
 
-              {/* ── AI suggestions ───────────────────────────────── */}
+              {/* AI suggestions */}
               {intelligence.rewardSuggestions.length > 0 && (
                 <Card>
                   <SecHead icon="💡" title="Tips to Improve Your Rewards Program"
@@ -1504,7 +1539,7 @@ const AnalyticsTab = () => {
       {activeTab === 'intelligence' && (
         <div className="space-y-4 sm:space-y-6">
 
-          {/* Prediction panel */}
+          {/* Prediction panel — always dark gradient (intentional brand style) */}
           <div className="bg-gradient-to-br from-indigo-900 to-purple-900 rounded-2xl border border-indigo-800 p-4 sm:p-6 text-white relative overflow-hidden">
             <div className="absolute -top-10 -right-10 w-40 h-40 bg-purple-500/20 rounded-full blur-3xl pointer-events-none" />
             <div className="absolute -bottom-10 -left-10 w-40 h-40 bg-indigo-500/20 rounded-full blur-3xl pointer-events-none" />
@@ -1519,7 +1554,6 @@ const AnalyticsTab = () => {
                   </p>
                 </div>
               </div>
-              {/* 2 col xs, 4 col sm */}
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-3">
                 {[
                   { label:'Estimated drop-offs', val: fmtNum(predictions.nextMonth), sub: `~${fmtNum(predictions.avgPerDay)}/day`, cls:'text-white text-2xl sm:text-3xl font-extrabold' },
@@ -1527,7 +1561,7 @@ const AnalyticsTab = () => {
                     sub: predictions.hasEnoughBaseData ? 'vs earlier in this period' : 'not enough prior data',
                     cls:`${predictions.trendDirection === 'upward' ? 'text-emerald-300' : 'text-rose-300'} text-2xl sm:text-3xl font-extrabold` },
                   { label:'Trend direction',     val: predictions.trendDirection === 'upward' ? '📈 Up' : '📉 Down', sub: predictions.trendSentence, cls:'text-base sm:text-lg font-bold text-white' },
-                  { label:'How reliable',        val: predictions.confidence,         sub: 'based on data available',              cls:'text-amber-300 text-xl sm:text-2xl font-bold' },
+                  { label:'How reliable',        val: predictions.confidence, sub: 'based on data available', cls:'text-amber-300 text-xl sm:text-2xl font-bold' },
                 ].map(({ label, val, sub, cls }) => (
                   <div key={label} className="bg-white/10 rounded-xl p-3 sm:p-4 backdrop-blur-sm">
                     <p className="text-[10px] sm:text-[11px] text-indigo-200 mb-1.5 sm:mb-2">{label}</p>
@@ -1537,7 +1571,7 @@ const AnalyticsTab = () => {
                 ))}
               </div>
 
-              {/* Kg forecast row — only shown when weight data exists */}
+              {/* Kg forecast row */}
               {kpi.hasWeightData && kgPredictions.nextMonthKg != null && (
                 <div className="mt-3 sm:mt-4 pt-3 sm:pt-4 border-t border-white/10">
                   <p className="text-[10px] sm:text-xs text-indigo-300 mb-2 sm:mb-3">⚖️ Waste Weight Forecast</p>
@@ -1548,7 +1582,7 @@ const AnalyticsTab = () => {
                         sub: kgPredictions.hasEnoughKgBase ? 'vs earlier in this period' : 'not enough prior data',
                         cls: `${kgPredictions.kgTrendDirection === 'upward' ? 'text-emerald-300' : 'text-rose-300'} text-2xl sm:text-3xl font-extrabold` },
                       { label: 'Weight trend',             val: kgPredictions.kgTrendDirection === 'upward' ? '📈 Up' : '📉 Down', sub: kgPredictions.kgTrendSentence, cls: 'text-base sm:text-lg font-bold text-white' },
-                      { label: 'Forecast reliability',     val: kgPredictions.kgConfidence,         sub: 'based on weight data available',                     cls: 'text-amber-300 text-xl sm:text-2xl font-bold' },
+                      { label: 'Forecast reliability',     val: kgPredictions.kgConfidence, sub: 'based on weight data available', cls: 'text-amber-300 text-xl sm:text-2xl font-bold' },
                     ].map(({ label, val, sub, cls }) => (
                       <div key={label} className="bg-white/10 rounded-xl p-3 sm:p-4 backdrop-blur-sm">
                         <p className="text-[10px] sm:text-[11px] text-teal-300 mb-1.5 sm:mb-2">{label}</p>

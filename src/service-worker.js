@@ -7,7 +7,7 @@ import { registerRoute } from 'workbox-routing';
 import { StaleWhileRevalidate, NetworkFirst } from 'workbox-strategies';
 
 // VERSION CONTROL - Increment on each deployment
-const CACHE_VERSION = 'v1.1.44';
+const CACHE_VERSION = 'v1.1.4';
 
 clientsClaim();
 
@@ -95,12 +95,6 @@ self.addEventListener('activate', (event) => {
       return self.clients.claim();
     })
   );
-});
-
-// ─── Install ──────────────────────────────────────────────────────────────────
-self.addEventListener('install', (event) => {
-  console.log(`📦 Service Worker ${CACHE_VERSION} installing...`);
-  self.skipWaiting();
 });
 
 console.log(`🚀 EcoSort Service Worker ${CACHE_VERSION} loaded`);

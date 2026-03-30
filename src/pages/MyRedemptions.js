@@ -288,6 +288,26 @@ export default function MyRedemptions() {
         console.warn("Stock restore failed after cancellation:", stockErr);
       }
 
+      // 📋 Create point_transaction FIRST so we can link its ID into the ledger block.
+      let pointTxId = null;
+      try {
+        const ptRef = await addDoc(collection(db, "point_transactions"), {
+          userId: currentUser.uid,
+          type: "redemption_cancelled",
+          points: refundPoints,          // positive — credit back to user
+          description: `Redemption Cancelled – "${redemption.rewardName || "reward"}"`,
+          refundNote: "Points Refunded",
+          rewardName: redemption.rewardName ?? null,
+          rewardId: redemption.rewardId ?? null,
+          redemptionId: redemption.id,
+          category: "refund",
+          timestamp: serverTimestamp(),
+        });
+        pointTxId = ptRef.id;
+      } catch (txError) {
+        console.error("⚠️ Warning: Failed to create transaction record:", txError);
+      }
+
       await addToLedger(
         currentUser.uid,
         "REDEMPTION_CANCELLED",
@@ -296,22 +316,9 @@ export default function MyRedemptions() {
           redemptionId: redemption.id,
           rewardName: redemption.rewardName ?? null,
           refundedPoints: refundPoints,
+          ...(pointTxId ? { firestoreId: pointTxId } : {}),
         }
       );
-
-      // 📋 Write a point_transaction so the cancellation appears in transaction history
-      await addDoc(collection(db, "point_transactions"), {
-        userId: currentUser.uid,
-        type: "redemption_cancelled",
-        points: refundPoints,          // positive — credit back to user
-        description: `Redemption Cancelled – "${redemption.rewardName || "reward"}"`,
-        refundNote: "Points Refunded",
-        rewardName: redemption.rewardName ?? null,
-        rewardId: redemption.rewardId ?? null,
-        redemptionId: redemption.id,
-        category: "refund",
-        timestamp: serverTimestamp(),
-      });
 
       await addNotification(
         currentUser.uid,

@@ -30,6 +30,14 @@ import { createBlockHash } from './blockchainService';
  * `point_transaction.points` and `metadata.txPoints` is detectable by
  * `verifyTransactionPointsTampering()` in blockchainService.js.
  *
+ * RECOVERY PATH:
+ * When tampering is detected, `recoverTamperedPoints(blockId, firestoreId, userId)`
+ * in blockchainService.js uses `metadata.txPoints` as the source of truth to:
+ *   1. Restore `point_transactions/{firestoreId}.points` to the sealed value.
+ *   2. Recalculate `users/{userId}.totalPoints` via ledger replay.
+ * `repairChain()` also uses `metadata.txPoints` to restore `block.points` if it was
+ * tampered directly in Firestore, before recomputing and resealing the block hash.
+ *
  * IMPORTANT: metadata.txPoints is always set here unconditionally from the canonical
  * `points` argument — any caller-supplied txPoints is overwritten to prevent spoofing.
  */
@@ -55,7 +63,8 @@ export const addToLedger = async (userId, actionType, points, metadata = {}) => 
       const timestamp = new Date().toISOString();
 
       // 3. Seal the original point value into metadata so it is covered by the hash.
-      //    This is the source of truth for detecting tampered point_transaction docs.
+      //    This is the source of truth for detecting tampered point_transaction docs
+      //    AND for restoring the correct block.points value if block.points is tampered.
       //    We always overwrite any caller-supplied txPoints to prevent spoofing.
       const sealedMetadata = {
         ...metadata,
@@ -166,6 +175,12 @@ export const getLedgerChain = async () => {
  * For all integrity checks inside the Admin Panel, use runAllIntegrityChecks()
  * from blockchainService.js instead — it fetches the full chain fresh from
  * Firestore with pagination and is the single source of truth for chain health.
+ *
+ * NOTE ON POINTS VERIFICATION:
+ * This function verifies hash integrity only — it does NOT cross-check
+ * block.points against metadata.txPoints or against point_transaction docs.
+ * For tamper detection on point values, use verifyTransactionPointsTampering()
+ * from blockchainService.js, and use recoverTamperedPoints() to restore them.
  */
 export const verifyChainIntegrity = (chainData) => {
     if (!chainData || chainData.length === 0) return true;

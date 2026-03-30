@@ -11,7 +11,10 @@ import {
   getAllAnchors,
   generateAuditProof,
   repairChain,
-  acknowledgeTamper
+  acknowledgeTamper,
+  recoverTamperedPoints,
+  restoreUserBalance,
+  sendTamperNotification,
 } from '../../utils/blockchainService';
 import { 
   ShieldCheck, 
@@ -30,15 +33,13 @@ import {
   Database,
   Recycle,
   Gift,
-  Eye,
-  BookOpen,
   Zap,
   Info,
   Lock,
-  Globe,
-  Fingerprint,
   TrendingUp,
   ShieldAlert,
+  RotateCcw,
+  UserCheck,
 } from 'lucide-react';
 import { useTheme } from '../../contexts/ThemeContext';
 
@@ -55,13 +56,16 @@ const BlockchainTab = () => {
   const [copied, setCopied] = useState(false);
   const [verificationDetails, setVerificationDetails] = useState(null); 
   const [externalDataStatus, setExternalDataStatus] = useState(null); 
-  const [txPointsTamperStatus, setTxPointsTamperStatus] = useState(null); // ← NEW
+  const [txPointsTamperStatus, setTxPointsTamperStatus] = useState(null);
   const [repairResult, setRepairResult] = useState(null);
   const [acknowledgingTamper, setAcknowledgingTamper] = useState(false);
+
+  // Recovery state
+  const [recoveringEntry, setRecoveringEntry] = useState(null); // blockId currently recovering
+  const [recoveryResults, setRecoveryResults] = useState({});   // { blockId: result }
+  const [restoringBalances, setRestoringBalances] = useState({}); // { userId: bool }
+  const [balanceRestoreResults, setBalanceRestoreResults] = useState({}); // { userId: result }
   
-  // Educational panel states
-  const [showWhyBlockchain, setShowWhyBlockchain] = useState(false);
-  const [showTechnicalDetails, setShowTechnicalDetails] = useState(false);
   const [impactMetrics, setImpactMetrics] = useState({
     totalTransactions: 0,
     totalPointsProtected: 0,
@@ -85,6 +89,8 @@ const BlockchainTab = () => {
   const loadChainStatus = async (initial = false) => {
     setLoading(true);
     setRepairResult(null); 
+    setRecoveryResults({});
+    setBalanceRestoreResults({});
     try {
       // 1. Get basic status
       const status = await getChainStatus();
@@ -105,7 +111,7 @@ const BlockchainTab = () => {
         // Store detailed results for each check
         setVerificationDetails(fullVerification.chainVerification); 
         setExternalDataStatus(fullVerification.dataVerification);
-        setTxPointsTamperStatus(fullVerification.txPointsVerification); // ← NEW
+        setTxPointsTamperStatus(fullVerification.txPointsVerification);
 
         // 3. Load latest blocks and anchors
         const latestBlocks = await getAllBlocks();
@@ -116,9 +122,9 @@ const BlockchainTab = () => {
         // 4. Calculate impact metrics
         calculateImpactMetrics(latestBlocks, allAnchors, fullVerification);
       } else {
-        setVerificationDetails({ valid: false, message: "Blockchain is not initialized (No Genesis Block)." });
+        setVerificationDetails({ valid: false, message: "Ledger is not initialized (No Genesis Block)." });
         setExternalDataStatus(null); 
-        setTxPointsTamperStatus(null); // ← NEW
+        setTxPointsTamperStatus(null);
         setBlocks([]);
         setAnchors([]);
       }
@@ -128,7 +134,7 @@ const BlockchainTab = () => {
       setChainStatus(prev => ({ ...prev, valid: false, message: `Error: ${error.message}` }));
       setVerificationDetails({ valid: false, message: `Error during structural verification: ${error.message}` });
       setExternalDataStatus({ valid: false, reason: `Error during external data verification: ${error.message}` });
-      setTxPointsTamperStatus({ valid: false, tampered: [], reason: `Error during transaction points audit: ${error.message}` }); // ← NEW
+      setTxPointsTamperStatus({ valid: false, tampered: [], reason: `Error during transaction points audit: ${error.message}` });
     } finally {
       setLoading(false);
     }
@@ -196,7 +202,10 @@ const BlockchainTab = () => {
             setRepairResult(result);
             if (result.success) {
               const hashPreview = result.latestHash ? result.latestHash.substring(0, 10) + '...' : 'N/A';
-              alert(`Chain Repair Complete! Repaired ${result.repairedCount} blocks. New Latest Hash: ${hashPreview}`);
+              const pointsNote = result.restoredPointsCount > 0
+                ? ` Also restored ${result.restoredPointsCount} block point value(s) from sealed txPoints.`
+                : '';
+              alert(`Chain Repair Complete! Repaired ${result.repairedCount} blocks. New Latest Hash: ${hashPreview}${pointsNote}`);
               await loadChainStatus();
             } else {
               alert(`Chain Repair Stopped:\n\n${result.message}`);
@@ -228,6 +237,79 @@ const BlockchainTab = () => {
     }
   };
 
+  /**
+   * Runs the full recovery pipeline for a single tampered point_transaction entry:
+   * 1. Restores point_transaction.points from sealed metadata.txPoints in the ledger block.
+   * 2. Re-derives users.totalPoints from ledger replay.
+   */
+  const handleRecoverTamperedEntry = async (entry) => {
+    if (!window.confirm(
+      `This will restore point_transaction '${entry.firestoreId}' from ${entry.livePoints} → ${entry.sealedPoints} pts using the ledger as source of truth, then recalculate user '${entry.userId}' balance from the ledger.\n\nContinue?`
+    )) return;
+
+    setRecoveringEntry(entry.blockId);
+    try {
+      const result = await recoverTamperedPoints(entry.blockId, entry.firestoreId, entry.userId);
+      setRecoveryResults(prev => ({ ...prev, [entry.blockId]: result }));
+      alert(
+        `✅ Recovery complete for user '${entry.userId}'.\n` +
+        `Transaction restored: ${result.txRestore.previousPoints} → ${result.txRestore.restoredPoints} pts.\n` +
+        `Balance corrected: ${result.balanceRestore.previousBalance} → ${result.balanceRestore.ledgerBalance} pts.`
+      );
+      // Refresh the integrity status so the tampered entry disappears from the list
+      await loadChainStatus();
+    } catch (err) {
+      setRecoveryResults(prev => ({ ...prev, [entry.blockId]: { success: false, error: err.message } }));
+      alert("Recovery failed: " + err.message);
+    } finally {
+      setRecoveringEntry(null);
+    }
+  };
+
+  /**
+   * Restores a single user's balance from ledger replay only.
+   * Used for the balance-difference entries in External Data Integrity.
+   *
+   * NOTE: The tamper-detected notification has already been sent automatically
+   * by runAllIntegrityChecks() when the discrepancy was first detected.
+   * Here we only send the "restored" confirmation once the fix is applied.
+   */
+  const handleRestoreBalance = async (userId) => {
+    if (!window.confirm(
+      `This will recalculate and restore the totalPoints balance for user '${userId}' by replaying their sealed ledger history.\n\nPre-integration points are preserved. Only post-integration points are recalculated.\n\nContinue?`
+    )) return;
+
+    setRestoringBalances(prev => ({ ...prev, [userId]: true }));
+    try {
+      const result = await restoreUserBalance(userId);
+      setBalanceRestoreResults(prev => ({ ...prev, [userId]: result }));
+
+      if (result.noChangeNeeded) {
+        alert(`ℹ️ User '${userId}' balance is already correct (${result.ledgerBalance} pts). No change needed.`);
+      } else {
+        // Notify the user that their balance has been corrected
+        await sendTamperNotification(userId, 'points_restored', {
+          title: '✅ Points Balance Restored',
+          message:
+            `Your points balance has been restored from ${result.previousBalance} to ` +
+            `${result.ledgerBalance} pts using the sealed ledger record as the source of truth.`,
+          previousBalance: result.previousBalance,
+          restoredBalance: result.ledgerBalance,
+          delta: result.delta ?? null,
+          restoredAt: new Date().toISOString(),
+        });
+        alert(`✅ Balance restored for user '${userId}': ${result.previousBalance} → ${result.ledgerBalance} pts.`);
+        // Always reload so the restored user disappears from the differences list
+        await loadChainStatus();
+      }
+    } catch (err) {
+      setBalanceRestoreResults(prev => ({ ...prev, [userId]: { success: false, error: err.message } }));
+      alert("Balance restore failed: " + err.message);
+    } finally {
+      setRestoringBalances(prev => ({ ...prev, [userId]: false }));
+    }
+  };
+
   useEffect(() => {
     loadChainStatus(true);
   }, []);
@@ -242,247 +324,15 @@ const BlockchainTab = () => {
     <div className={`p-3 sm:p-6 w-full overflow-hidden ${isDark ? "text-gray-100" : "text-gray-800"}`}>
       {/* Header with Educational Toggle */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-6 gap-3">
-        <h2 className="text-2xl sm:text-3xl font-bold">Blockchain Admin Panel</h2>
-        
-        <div className="flex flex-wrap gap-2">
-          <button
-            onClick={() => setShowWhyBlockchain(!showWhyBlockchain)}
-            className={`px-3 py-2 rounded-lg font-medium flex items-center gap-2 transition-colors text-sm ${
-              showWhyBlockchain 
-                ? isDark ? "bg-indigo-600 text-white" : "bg-indigo-500 text-white"
-                : isDark ? "bg-gray-700 text-gray-300 hover:bg-gray-600" : "bg-gray-200 text-gray-700 hover:bg-gray-300"
-            }`}
-          >
-            <Info className="w-4 h-4" />
-            Why Blockchain?
-          </button>
-          
-          <button
-            onClick={() => setShowTechnicalDetails(!showTechnicalDetails)}
-            className={`px-3 py-2 rounded-lg font-medium flex items-center gap-2 transition-colors text-sm ${
-              showTechnicalDetails 
-                ? isDark ? "bg-purple-600 text-white" : "bg-purple-500 text-white"
-                : isDark ? "bg-gray-700 text-gray-300 hover:bg-gray-600" : "bg-gray-200 text-gray-700 hover:bg-gray-300"
-            }`}
-          >
-            <BookOpen className="w-4 h-4" />
-            Technical Details
-          </button>
-        </div>
+        <h2 className="text-2xl sm:text-3xl font-bold">Integrity Verification</h2>
       </div>
-
-      {/* Why Blockchain Educational Panel */}
-      {showWhyBlockchain && (
-        <div className={`mb-6 p-6 rounded-xl shadow-lg border ${isDark ? "bg-gray-800 border-gray-700" : "bg-white border-gray-200"}`}>
-          <h3 className="text-xl font-bold mb-4 flex items-center gap-2">
-            <ShieldCheck className="w-6 h-6 text-blue-500" />
-            Why We Use Blockchain Technology
-          </h3>
-          
-          {/* Comparison Table */}
-          <div className="overflow-x-auto mb-6 -mx-2">
-            <table className="w-full text-sm min-w-[480px]">
-              <thead>
-                <tr className={isDark ? "bg-gray-700" : "bg-gray-100"}>
-                  <th className="p-3 text-left font-semibold">Traditional Database</th>
-                  <th className="p-3 text-left font-semibold text-green-600">With Blockchain</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr className={isDark ? "border-b border-gray-700" : "border-b border-gray-200"}>
-                  <td className="p-3 flex items-start gap-2">
-                    <AlertTriangle className="w-4 h-4 text-red-500 mt-0.5 flex-shrink-0" />
-                    <span>Admin can edit/delete reward records</span>
-                  </td>
-                  <td className="p-3">
-                    <div className="flex items-start gap-2">
-                      <CheckCircle2 className="w-4 h-4 text-green-500 mt-0.5 flex-shrink-0" />
-                      <span>Records are immutable - cannot be changed</span>
-                    </div>
-                  </td>
-                </tr>
-                <tr className={isDark ? "border-b border-gray-700" : "border-b border-gray-200"}>
-                  <td className="p-3 flex items-start gap-2">
-                    <AlertTriangle className="w-4 h-4 text-red-500 mt-0.5 flex-shrink-0" />
-                    <span>Changes are invisible to users</span>
-                  </td>
-                  <td className="p-3">
-                    <div className="flex items-start gap-2">
-                      <CheckCircle2 className="w-4 h-4 text-green-500 mt-0.5 flex-shrink-0" />
-                      <span>Every change leaves a permanent trace</span>
-                    </div>
-                  </td>
-                </tr>
-                <tr className={isDark ? "border-b border-gray-700" : "border-b border-gray-200"}>
-                  <td className="p-3 flex items-start gap-2">
-                    <AlertTriangle className="w-4 h-4 text-red-500 mt-0.5 flex-shrink-0" />
-                    <span>Users must trust administrators</span>
-                  </td>
-                  <td className="p-3">
-                    <div className="flex items-start gap-2">
-                      <CheckCircle2 className="w-4 h-4 text-green-500 mt-0.5 flex-shrink-0" />
-                      <span>Users can verify independently</span>
-                    </div>
-                  </td>
-                </tr>
-                <tr>
-                  <td className="p-3 flex items-start gap-2">
-                    <AlertTriangle className="w-4 h-4 text-red-500 mt-0.5 flex-shrink-0" />
-                    <span>Corruption can go undetected</span>
-                  </td>
-                  <td className="p-3">
-                    <div className="flex items-start gap-2">
-                      <CheckCircle2 className="w-4 h-4 text-green-500 mt-0.5 flex-shrink-0" />
-                      <span>Tampering is immediately visible</span>
-                    </div>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-
-          {/* Key Benefits */}
-          <div className="grid md:grid-cols-2 gap-4">
-            <div className={`p-4 rounded-lg ${isDark ? "bg-gray-700" : "bg-blue-50"}`}>
-              <div className="flex items-start gap-3">
-                <Lock className="w-5 h-5 text-blue-500 mt-1" />
-                <div>
-                  <h4 className="font-bold mb-1">Protects Real Value</h4>
-                  <p className="text-sm opacity-80">Reward points have monetary value. Blockchain prevents unauthorized manipulation.</p>
-                </div>
-              </div>
-            </div>
-            
-            <div className={`p-4 rounded-lg ${isDark ? "bg-gray-700" : "bg-green-50"}`}>
-              <div className="flex items-start gap-3">
-                <Eye className="w-5 h-5 text-green-500 mt-1" />
-                <div>
-                  <h4 className="font-bold mb-1">Transparency in Governance</h4>
-                  <p className="text-sm opacity-80">Aligns with SDG 16 (Strong Institutions) through transparent reward distribution.</p>
-                </div>
-              </div>
-            </div>
-            
-            <div className={`p-4 rounded-lg ${isDark ? "bg-gray-700" : "bg-purple-50"}`}>
-              <div className="flex items-start gap-3">
-                <ShieldCheck className="w-5 h-5 text-purple-500 mt-1" />
-                <div>
-                  <h4 className="font-bold mb-1">Prevents Corruption</h4>
-                  <p className="text-sm opacity-80">Makes it impossible for anyone to alter historical records without detection.</p>
-                </div>
-              </div>
-            </div>
-            
-            <div className={`p-4 rounded-lg ${isDark ? "bg-gray-700" : "bg-orange-50"}`}>
-              <div className="flex items-start gap-3">
-                <Globe className="w-5 h-5 text-orange-500 mt-1" />
-                <div>
-                  <h4 className="font-bold mb-1">Builds Community Trust</h4>
-                  <p className="text-sm opacity-80">Users can independently verify that the system is fair and accurate.</p>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Technical Details Educational Panel */}
-      {showTechnicalDetails && (
-        <div className={`mb-6 p-6 rounded-xl shadow-lg border ${isDark ? "bg-gray-800 border-gray-700" : "bg-white border-gray-200"}`}>
-          <h3 className="text-xl font-bold mb-4 flex items-center gap-2">
-            <Fingerprint className="w-6 h-6 text-purple-500" />
-            Blockchain Architecture & Cryptography
-          </h3>
-          
-          <div className="space-y-4">
-            {/* Block Structure */}
-            <div className={`p-4 rounded-lg border-l-4 border-blue-500 ${isDark ? "bg-gray-700" : "bg-blue-50"}`}>
-              <h4 className="font-bold mb-2">Block Structure</h4>
-              <p className="text-sm mb-2">Each block contains:</p>
-              <ul className="text-sm space-y-1 ml-4">
-                <li>• Index (sequential number)</li>
-                <li>• Timestamp (when created)</li>
-                <li>• Data (transaction details)</li>
-                <li>• Previous Hash (link to previous block)</li>
-                <li>• Current Hash (SHA-256 cryptographic fingerprint)</li>
-                <li>• Metadata (including sealed <code className="font-mono text-xs">txPoints</code> — original transaction amount)</li>
-              </ul>
-            </div>
-
-            {/* Hash Chaining */}
-            <div className={`p-4 rounded-lg border-l-4 border-green-500 ${isDark ? "bg-gray-700" : "bg-green-50"}`}>
-              <h4 className="font-bold mb-2">Hash Chaining Mechanism</h4>
-              <p className="text-sm">
-                Each block's hash depends on its data AND the previous block's hash, creating an unbreakable chain. 
-                If anyone tries to modify a past block, ALL subsequent hashes break, making tampering immediately detectable.
-              </p>
-            </div>
-
-            {/* txPoints seal — NEW explanation */}
-            <div className={`p-4 rounded-lg border-l-4 border-orange-500 ${isDark ? "bg-gray-700" : "bg-orange-50"}`}>
-              <h4 className="font-bold mb-2 flex items-center gap-2">
-                <ShieldAlert className="w-4 h-4 text-orange-500" />
-                Transaction Points Seal
-              </h4>
-              <p className="text-sm">
-                When a block is written, the original transaction points value is sealed into{' '}
-                <code className="font-mono text-xs">metadata.txPoints</code> and folded into the block's SHA-256 hash.
-                Even if the linked <code className="font-mono text-xs">point_transaction</code> document is later edited
-                directly in the database, the sealed value never changes — making the alteration detectable
-                by the Transaction Points Integrity check below.
-              </p>
-            </div>
-
-            {/* SHA-256 Example */}
-            <div className={`p-4 rounded-lg ${isDark ? "bg-black/20" : "bg-gray-100"}`}>
-              <h4 className="font-bold mb-2 flex items-center gap-2">
-                <Hash className="w-4 h-4" />
-                SHA-256 Hash Example
-              </h4>
-              <div className="space-y-2 font-mono text-xs overflow-hidden">
-                <div className="truncate">
-                  <span className="opacity-60">Input: </span>
-                  <span className="text-blue-500">"transaction_123"</span>
-                </div>
-                <div className="truncate">
-                  <span className="opacity-60">SHA-256: </span>
-                  <span className="text-green-500">a7f8b9c0d1e2...</span>
-                </div>
-                <div className="border-t border-gray-300 dark:border-gray-600 my-2"></div>
-                <div className="truncate">
-                  <span className="opacity-60">Input: </span>
-                  <span className="text-red-500">"transaction_124"</span>
-                  <span className="opacity-60"> (changed 1 digit)</span>
-                </div>
-                <div className="truncate">
-                  <span className="opacity-60">SHA-256: </span>
-                  <span className="text-red-500">x1y2z3a4b5c6...</span>
-                  <span className="opacity-60"> (completely different!)</span>
-                </div>
-              </div>
-              <p className="text-sm mt-3 opacity-80">
-                Even changing a single character completely changes the hash. This is the foundation of blockchain security.
-              </p>
-            </div>
-
-            {/* Anchor System */}
-            <div className={`p-4 rounded-lg border-l-4 border-purple-500 ${isDark ? "bg-gray-700" : "bg-purple-50"}`}>
-              <h4 className="font-bold mb-2">Anchor Mechanism</h4>
-              <p className="text-sm">
-                Periodic anchors act as public checkpoints, providing additional verification points. 
-                These are published hashes that serve as trusted reference points for the entire chain state.
-              </p>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Impact Metrics Dashboard */}
       {chainStatus.initialized && (
         <div className={`mb-6 p-6 rounded-xl shadow-lg ${isDark ? "bg-gradient-to-r from-indigo-900/50 to-purple-900/50 border border-indigo-700" : "bg-gradient-to-r from-indigo-50 to-purple-50 border border-indigo-200"}`}>
           <h3 className="text-xl font-bold mb-4 flex items-center gap-2">
             <TrendingUp className="w-6 h-6" />
-            Blockchain Impact Metrics
+            Integrity Metrics
           </h3>
           
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -613,9 +463,14 @@ const BlockchainTab = () => {
         }`}>
             <p className="font-semibold">{repairResult.success ? `✅ Repair Successful!` : `❌ Repair Stopped`}</p>
             {repairResult.success ? (
-              <p className="text-sm">
-                Repaired Blocks: {repairResult.repairedCount ?? 0}. Latest Hash: {repairResult.latestHash ? repairResult.latestHash.substring(0, 15) + '...' : 'N/A'}
-              </p>
+              <div className="text-sm space-y-0.5">
+                <p>Repaired Blocks: {repairResult.repairedCount ?? 0}. Latest Hash: {repairResult.latestHash ? repairResult.latestHash.substring(0, 15) + '...' : 'N/A'}</p>
+                {(repairResult.restoredPointsCount ?? 0) > 0 && (
+                  <p className="font-semibold">
+                    🔢 {repairResult.restoredPointsCount} block point value(s) restored from sealed <code className="font-mono text-xs">metadata.txPoints</code>.
+                  </p>
+                )}
+              </div>
             ) : (
               <p className="text-sm">{repairResult.message}</p>
             )}
@@ -680,7 +535,7 @@ const BlockchainTab = () => {
 
         {/* Integrity Cards Row */}
         <div className="flex flex-col sm:flex-row gap-4">
-            {/* 1. Blockchain Structural Integrity Card */}
+            {/* 1. Ledger Structural Integrity Card */}
             {verificationDetails && (
                 <div 
                     className={`flex-1 p-4 rounded-xl shadow-lg transition-colors border ${
@@ -695,7 +550,7 @@ const BlockchainTab = () => {
                             : <AlertTriangle className={`w-6 h-6 flex-shrink-0 ${isDark ? "text-red-400" : "text-red-600"}`} />}
                         <div>
                             <h3 className={`font-bold text-lg mb-1 ${isDark ? "text-white" : "text-gray-800"}`}>
-                                Blockchain Structural Integrity
+                                Ledger Structural Integrity
                             </h3>
                             <p className={`text-sm ${isDark ? "text-gray-300" : "text-gray-600"}`}>
                                 {verificationDetails.message}
@@ -758,7 +613,7 @@ const BlockchainTab = () => {
                         {externalDataStatus.valid 
                             ? <CheckCircle2 className={`w-6 h-6 flex-shrink-0 ${isDark ? "text-emerald-400" : "text-emerald-600"}`} />
                             : <AlertTriangle className={`w-6 h-6 flex-shrink-0 ${isDark ? "text-red-400" : "text-red-600"}`} />}
-                        <div>
+                        <div className="flex-1 min-w-0">
                             <h3 className={`font-bold text-lg mb-1 ${isDark ? "text-white" : "text-gray-800"}`}>
                                 External Data Integrity
                             </h3>
@@ -775,6 +630,20 @@ const BlockchainTab = () => {
                                 </span>
                             </div>
 
+                            {/* Pre-integration exclusion notice */}
+                            {(externalDataStatus.preIntegrationBlocksSkipped ?? 0) > 0 && (
+                              <div className={`mb-2 px-3 py-2 rounded-lg text-xs flex items-start gap-2 ${isDark ? 'bg-blue-900/30 border border-blue-800 text-blue-300' : 'bg-blue-50 border border-blue-200 text-blue-700'}`}>
+                                <Info className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+                                <span>
+                                  <strong>{externalDataStatus.preIntegrationBlocksSkipped} pre-integration block(s) excluded</strong> from this comparison.
+                                  These existed before the ledger was integrated and their points are correctly reflected in existing user balances — excluding them prevents false mismatch alerts.
+                                  {externalDataStatus.cutoffDate && (
+                                    <span className="block mt-0.5 opacity-80">Ledger active since: {new Date(externalDataStatus.cutoffDate).toLocaleString()}</span>
+                                  )}
+                                </span>
+                              </div>
+                            )}
+
                             <p className={`text-sm ${isDark ? "text-gray-300" : "text-gray-600"}`}>
                                 {externalDataStatus.reason} 
                             </p>
@@ -784,13 +653,90 @@ const BlockchainTab = () => {
                                     <strong className={isDark ? "text-red-300" : "text-red-800"}> Ext. Total: {externalDataStatus.transactionsTotal}</strong>
                                 </p>
                             )}
+
+                            {/* Per-user balance difference table with restore buttons */}
+                            {externalDataStatus.hasDifferences && externalDataStatus.differences?.length > 0 && (
+                              <div className="mt-3 space-y-2">
+                                <p className={`text-xs font-bold uppercase tracking-wider ${isDark ? 'text-yellow-400' : 'text-yellow-700'}`}>
+                                  ℹ️ Post-Integration Balance Differences — Review & Restore
+                                </p>
+                                <p className={`text-xs ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
+                                  These users have a live balance that doesn't match their post-integration ledger history. This may be a legitimate admin correction or unauthorized tampering. Use "Restore Balance" to re-derive from the ledger (pre-integration points are preserved).
+                                </p>
+                                {externalDataStatus.differences.map((diff) => {
+                                  const restoreResult = balanceRestoreResults[diff.userId];
+                                  const isRestoring = restoringBalances[diff.userId];
+                                  return (
+                                    <div
+                                      key={diff.userId}
+                                      className={`p-3 rounded-lg border text-xs ${
+                                        isDark ? 'bg-yellow-900/20 border-yellow-800' : 'bg-yellow-50 border-yellow-200'
+                                      }`}
+                                    >
+                                      <div className="flex items-start justify-between gap-2 flex-wrap">
+                                        <div className="space-y-1 min-w-0">
+                                          <span className={`font-mono font-bold break-all ${isDark ? 'text-yellow-300' : 'text-yellow-800'}`}>
+                                            User: {diff.userId}
+                                          </span>
+                                          <div className="flex gap-3 flex-wrap">
+                                            <span className={`px-2 py-0.5 rounded font-mono font-bold text-[11px] ${isDark ? 'bg-green-900/40 text-green-300' : 'bg-green-100 text-green-800'}`}>
+                                              Ledger (post-integration): {diff.fromLedger} pts
+                                            </span>
+                                            <span className={`px-2 py-0.5 rounded font-mono font-bold text-[11px] ${isDark ? 'bg-red-900/40 text-red-300' : 'bg-red-100 text-red-800'}`}>
+                                              Live balance: {diff.fromDb} pts
+                                            </span>
+                                            <span className={`px-2 py-0.5 rounded font-mono text-[11px] font-bold ${
+                                              diff.delta > 0
+                                                ? isDark ? 'bg-orange-900/40 text-orange-300' : 'bg-orange-100 text-orange-800'
+                                                : isDark ? 'bg-blue-900/40 text-blue-300' : 'bg-blue-100 text-blue-800'
+                                            }`}>
+                                              Δ {diff.delta > 0 ? '+' : ''}{diff.delta} pts
+                                            </span>
+                                          </div>
+                                          {restoreResult && (
+                                            <p className={`text-[11px] mt-1 ${
+                                              restoreResult.success
+                                                ? isDark ? 'text-emerald-400' : 'text-emerald-700'
+                                                : isDark ? 'text-red-400' : 'text-red-700'
+                                            }`}>
+                                              {restoreResult.success
+                                                ? restoreResult.noChangeNeeded
+                                                  ? '✅ Balance already correct — no change needed.'
+                                                  : `✅ Restored: ${restoreResult.previousBalance} → ${restoreResult.ledgerBalance} pts`
+                                                : `❌ Failed: ${restoreResult.error}`}
+                                            </p>
+                                          )}
+                                        </div>
+                                        <button
+                                          onClick={() => handleRestoreBalance(diff.userId)}
+                                          disabled={isRestoring || !!restoreResult?.success}
+                                          className={`flex-shrink-0 flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-bold transition-colors disabled:opacity-50 ${
+                                            restoreResult?.success
+                                              ? isDark ? 'bg-emerald-700 text-white cursor-default' : 'bg-emerald-100 text-emerald-800 cursor-default'
+                                              : isDark ? 'bg-yellow-600 hover:bg-yellow-700 text-white' : 'bg-yellow-500 hover:bg-yellow-600 text-white'
+                                          }`}
+                                        >
+                                          {isRestoring
+                                            ? <Loader2 className="w-3 h-3 animate-spin" />
+                                            : restoreResult?.success
+                                              ? <Check className="w-3 h-3" />
+                                              : <UserCheck className="w-3 h-3" />
+                                          }
+                                          {isRestoring ? 'Restoring...' : restoreResult?.success ? 'Restored' : 'Restore Balance'}
+                                        </button>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
                         </div>
                     </div>
                 </div>
             )}
         </div>
 
-        {/* 3. Transaction Points Integrity Card — NEW */}
+        {/* 3. Transaction Points Integrity Card */}
         {txPointsTamperStatus && (
           <div className={`mt-4 p-4 rounded-xl shadow-lg border ${
             txPointsTamperStatus.skipped
@@ -821,8 +767,10 @@ const BlockchainTab = () => {
                       <ShieldCheck className="w-3 h-3 mr-1"/> Verified: {txPointsTamperStatus.checkedCount ?? 0}
                     </span>
                     {(txPointsTamperStatus.skippedLegacy ?? 0) > 0 && (
-                      <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold uppercase border ${isDark ? "bg-yellow-900/40 text-yellow-300 border-yellow-700" : "bg-yellow-100 text-yellow-700 border-yellow-200"}`}>
-                        Legacy: {txPointsTamperStatus.skippedLegacy}
+                      <span
+                        title="These blocks were written before the txPoints seal feature was introduced. They cannot be retroactively verified against point_transaction docs, but this is expected — it does not indicate tampering."
+                        className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold uppercase border cursor-help ${isDark ? "bg-gray-700 text-gray-300 border-gray-600" : "bg-gray-100 text-gray-600 border-gray-300"}`}>
+                        Pre-seal (unverifiable): {txPointsTamperStatus.skippedLegacy}
                       </span>
                     )}
                     {(txPointsTamperStatus.tampered?.length ?? 0) > 0 && (
@@ -833,55 +781,117 @@ const BlockchainTab = () => {
                   </div>
                 )}
 
+                {/* Pre-seal explanation when legacy blocks are present */}
+                {!txPointsTamperStatus.skipped && (txPointsTamperStatus.skippedLegacy ?? 0) > 0 && (
+                  <div className={`mb-2 px-3 py-2 rounded-lg text-xs flex items-start gap-2 ${isDark ? 'bg-gray-700/60 border border-gray-600 text-gray-300' : 'bg-gray-50 border border-gray-200 text-gray-600'}`}>
+                    <Info className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+                    <span>
+                      <strong>{txPointsTamperStatus.skippedLegacy} block(s) pre-date the tamper-seal feature</strong> and cannot be verified against point_transaction docs.
+                      This is expected for transactions that occurred before the ledger was integrated — it does <em>not</em> indicate tampering.
+                      Only blocks written after integration have tamper-detection coverage.
+                    </span>
+                  </div>
+                )}
+
                 <p className={`text-sm ${isDark ? 'text-gray-300' : 'text-gray-600'}`}>
                   {txPointsTamperStatus.reason}
                 </p>
 
-                {/* Tampered entries detail table */}
+                {/* Tampered entries detail table with per-entry Restore button */}
                 {txPointsTamperStatus.tampered?.length > 0 && (
                   <div className="mt-3 space-y-2">
                     <p className={`text-xs font-bold uppercase tracking-wider ${isDark ? 'text-red-400' : 'text-red-700'}`}>
-                      🚨 Tampered Entries — Review Required
+                      🚨 Tampered Entries — Restore Required
                     </p>
-                    {txPointsTamperStatus.tampered.map((entry) => (
-                      <div
-                        key={entry.blockId}
-                        className={`p-3 rounded-lg border text-xs ${
-                          isDark ? 'bg-red-900/30 border-red-800' : 'bg-red-50 border-red-200'
-                        }`}
-                      >
-                        <div className="flex justify-between items-start gap-2 mb-1.5">
-                          <span className={`font-bold ${isDark ? 'text-red-300' : 'text-red-800'}`}>
-                            Block #{entry.blockIndex} · {entry.actionType}
-                          </span>
-                          <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider flex-shrink-0 ${
-                            entry.issue === 'TRANSACTION_DELETED'
-                              ? 'bg-orange-500 text-white'
-                              : 'bg-red-500 text-white'
-                          }`}>
-                            {entry.issue === 'TRANSACTION_DELETED' ? 'Deleted' : 'Mismatch'}
-                          </span>
-                        </div>
-                        <p className={`mb-2 ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>
-                          {entry.detail}
-                        </p>
-                        {entry.issue === 'POINTS_MISMATCH' && (
-                          <div className="flex gap-3 mb-2">
-                            <span className={`px-2 py-1 rounded font-mono font-bold text-[11px] ${isDark ? 'bg-green-900/40 text-green-300' : 'bg-green-100 text-green-800'}`}>
-                              Sealed: {entry.sealedPoints} pts
+                    {txPointsTamperStatus.tampered.map((entry) => {
+                      const isThisRecovering = recoveringEntry === entry.blockId;
+                      const recoveryResult   = recoveryResults[entry.blockId];
+                      const alreadyDone      = !!recoveryResult?.success;
+
+                      return (
+                        <div
+                          key={entry.blockId}
+                          className={`p-3 rounded-lg border text-xs ${
+                            isDark ? 'bg-red-900/30 border-red-800' : 'bg-red-50 border-red-200'
+                          }`}
+                        >
+                          <div className="flex justify-between items-start gap-2 mb-1.5">
+                            <span className={`font-bold ${isDark ? 'text-red-300' : 'text-red-800'}`}>
+                              Block #{entry.blockIndex} · {entry.actionType}
                             </span>
-                            <span className={`px-2 py-1 rounded font-mono font-bold text-[11px] ${isDark ? 'bg-red-900/40 text-red-300' : 'bg-red-100 text-red-800'}`}>
-                              Live: {entry.livePoints} pts
+                            <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider flex-shrink-0 ${
+                              entry.issue === 'TRANSACTION_DELETED'
+                                ? 'bg-orange-500 text-white'
+                                : 'bg-red-500 text-white'
+                            }`}>
+                              {entry.issue === 'TRANSACTION_DELETED' ? 'Deleted' : 'Mismatch'}
                             </span>
                           </div>
-                        )}
-                        <div className={`flex flex-wrap gap-x-4 gap-y-0.5 font-mono text-[10px] ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
-                          <span>TX: {entry.firestoreId}</span>
-                          <span>User: {entry.userId}</span>
-                          <span>{entry.timestamp ? new Date(entry.timestamp).toLocaleString() : 'N/A'}</span>
+                          <p className={`mb-2 ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>
+                            {entry.detail}
+                          </p>
+
+                          {/* Points comparison */}
+                          {entry.issue === 'POINTS_MISMATCH' && (
+                            <div className="flex gap-3 mb-2 flex-wrap">
+                              <span className={`px-2 py-1 rounded font-mono font-bold text-[11px] ${isDark ? 'bg-green-900/40 text-green-300' : 'bg-green-100 text-green-800'}`}>
+                                Sealed (correct): {entry.sealedPoints} pts
+                              </span>
+                              <span className={`px-2 py-1 rounded font-mono font-bold text-[11px] ${isDark ? 'bg-red-900/40 text-red-300' : 'bg-red-100 text-red-800'}`}>
+                                Live (tampered): {entry.livePoints} pts
+                              </span>
+                            </div>
+                          )}
+
+                          {/* Meta info row */}
+                          <div className={`flex flex-wrap gap-x-4 gap-y-0.5 font-mono text-[10px] mb-2 ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
+                            <span>TX: {entry.firestoreId}</span>
+                            <span>User: {entry.userId}</span>
+                            <span>{entry.timestamp ? new Date(entry.timestamp).toLocaleString() : 'N/A'}</span>
+                          </div>
+
+                          {/* Recovery result feedback */}
+                          {recoveryResult && (
+                            <p className={`text-[11px] mb-2 font-semibold ${
+                              recoveryResult.success
+                                ? isDark ? 'text-emerald-400' : 'text-emerald-700'
+                                : isDark ? 'text-red-400' : 'text-red-700'
+                            }`}>
+                              {recoveryResult.success
+                                ? `✅ Restored: TX ${recoveryResult.txRestore.previousPoints} → ${recoveryResult.txRestore.restoredPoints} pts · Balance ${recoveryResult.balanceRestore.previousBalance} → ${recoveryResult.balanceRestore.ledgerBalance} pts`
+                                : `❌ Recovery failed: ${recoveryResult.error}`}
+                            </p>
+                          )}
+
+                          {/* Restore button — only shown for POINTS_MISMATCH (not TRANSACTION_DELETED) */}
+                          {entry.issue === 'POINTS_MISMATCH' && (
+                            <button
+                              onClick={() => handleRecoverTamperedEntry(entry)}
+                              disabled={isThisRecovering || alreadyDone || !!recoveringEntry}
+                              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-colors disabled:opacity-50 ${
+                                alreadyDone
+                                  ? isDark ? 'bg-emerald-700 text-white cursor-default' : 'bg-emerald-100 text-emerald-800 cursor-default'
+                                  : isDark ? 'bg-red-600 hover:bg-red-700 text-white' : 'bg-red-500 hover:bg-red-600 text-white'
+                              }`}
+                            >
+                              {isThisRecovering
+                                ? <><Loader2 className="w-3 h-3 animate-spin"/> Recovering...</>
+                                : alreadyDone
+                                  ? <><Check className="w-3 h-3"/> Recovered</>
+                                  : <><RotateCcw className="w-3 h-3"/> Restore Points & Fix Balance</>
+                              }
+                            </button>
+                          )}
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
+
+                    {/* Bulk recovery note */}
+                    {txPointsTamperStatus.tampered.filter(e => e.issue === 'POINTS_MISMATCH').length > 1 && (
+                      <p className={`text-xs italic ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
+                        Tip: After restoring all entries, run <strong>Repair Chain</strong> to re-seal any affected block hashes.
+                      </p>
+                    )}
                   </div>
                 )}
               </div>
@@ -940,25 +950,6 @@ const BlockchainTab = () => {
         )}
       </div>
 
-      {/* Info Box */}
-      <div className={`mt-8 p-6 rounded-xl border-l-4 ${
-        isDark ? "bg-blue-900/20 border-blue-500 text-blue-300" : "bg-blue-50 border-blue-500 text-blue-800"
-      }`}>
-        <h4 className="font-bold mb-2 flex items-center gap-2">
-          <Info className="w-5 h-5" />
-          Why This Qualifies as Emerging Technology
-        </h4>
-        <p className={`text-sm mb-3 ${isDark ? "text-blue-200" : "text-blue-700"}`}>
-          We apply blockchain principles used by Bitcoin and Ethereum to local governance - waste reward management. 
-          Every transaction creates a cryptographic hash linked to the previous one. Publishing an "anchor" 
-          saves the current state publicly. Anyone can verify the ledger by recalculating hashes.
-        </p>
-        <p className={`text-sm ${isDark ? "text-blue-200" : "text-blue-700"}`}>
-          This technology transfer from financial systems to environmental governance represents an innovative 
-          application of emerging blockchain technology, directly supporting SDG 16 (Strong Institutions) through 
-          corruption-resistant, transparent systems.
-        </p>
-      </div>
       
       {loading && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">

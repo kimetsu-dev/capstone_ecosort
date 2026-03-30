@@ -6,8 +6,7 @@ import { collection, query, orderBy, onSnapshot } from 'firebase/firestore';
 import { 
   ShieldCheck, AlertTriangle, Link as LinkIcon, Hash, Clock, User, 
   Loader2, Search, Box, ChevronDown, ChevronUp, RotateCw, Database,
-  Recycle, Gift, Info, BookOpen, Eye, Lock, Globe, Fingerprint, 
-  TrendingUp, CheckCircle2
+  Recycle, Gift, Info, CheckCircle2, ShieldAlert, TrendingUp
 } from 'lucide-react';
 import { useTheme } from '../../contexts/ThemeContext';
 import { runAllIntegrityChecks } from '../../utils/blockchainService';
@@ -23,10 +22,8 @@ const LedgerTab = () => {
   const [expandedBlock, setExpandedBlock] = useState(null);
   const [chainVerification, setChainVerification] = useState(null);
   const [externalDataStatus, setExternalDataStatus] = useState(null);
+  const [txPointsTamperStatus, setTxPointsTamperStatus] = useState(null);
   
-  const [showWhyBlockchain, setShowWhyBlockchain] = useState(false);
-  const [showTechnicalDetails, setShowTechnicalDetails] = useState(false);
-
   const PAGE_SIZE = 25;
   const [currentPage, setCurrentPage] = useState(1);
   
@@ -37,7 +34,7 @@ const LedgerTab = () => {
     newestBlock: null
   });
 
-  // ✨ NEW: Refs to prevent race conditions during bulk repair updates
+  // Refs to prevent race conditions during bulk repair updates
   const verificationCounter = useRef(0);
   const verificationTimeout = useRef(null);
 
@@ -48,7 +45,7 @@ const LedgerTab = () => {
     return new Date(timestamp).toLocaleString();
   };
 
-  // ✨ ENHANCED: Debounced verification to handle rapid bulk updates from repairChain()
+  // Debounced verification to handle rapid bulk updates from repairChain()
   const runVerification = useCallback((immediate = false) => {
     // Clear any pending verification
     if (verificationTimeout.current) {
@@ -69,6 +66,7 @@ const LedgerTab = () => {
                 setIntegrityStatus(fullVerification.message);
                 setChainVerification(fullVerification.chainVerification);
                 setExternalDataStatus(fullVerification.dataVerification);
+                setTxPointsTamperStatus(fullVerification.txPointsVerification);
                 setVerifying(false);
             }
         } catch (error) {
@@ -113,7 +111,7 @@ const LedgerTab = () => {
         setBlocks(newBlocks);
         calculateImpactMetrics(newBlocks);
         setLoading(false);
-        // ✨ ENHANCED: Call with immediate=false so it debounces during repairs
+        // Call with immediate=false so it debounces during repairs
         runVerification(false);
     }, (error) => {
         console.error("Error fetching ledger blocks:", error);
@@ -138,6 +136,16 @@ const LedgerTab = () => {
   };
 
   const invalidBlockIndices = new Set(chainVerification?.invalidBlocks ?? []);
+
+  // Build a set of blockIds that have tampered points (for per-row highlighting)
+  const tamperedPointsBlockIds = new Set(
+    (txPointsTamperStatus?.tampered ?? []).map(e => e.blockId)
+  );
+  // Also index tampered entries by blockId for quick tooltip/detail lookup
+  const tamperedPointsMap = Object.fromEntries(
+    (txPointsTamperStatus?.tampered ?? []).map(e => [e.blockId, e])
+  );
+
   const totalPages = Math.max(1, Math.ceil(filteredBlocks.length / PAGE_SIZE));
   const paginatedBlocks = filteredBlocks.slice(
     (currentPage - 1) * PAGE_SIZE,
@@ -149,239 +157,10 @@ const LedgerTab = () => {
       {/* Header with Educational Toggles */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-6 gap-3">
         <h1 className={`text-2xl sm:text-3xl font-bold ${isDark ? 'text-white' : 'text-gray-800'}`}>
-          Immutable Ledger (Blockchain)
+          Immutable Ledger
         </h1>
         
-        <div className="flex flex-wrap gap-2">
-          <button
-            onClick={() => setShowWhyBlockchain(!showWhyBlockchain)}
-            className={`px-3 py-2 rounded-lg font-medium flex items-center gap-2 transition-colors text-sm ${
-              showWhyBlockchain 
-                ? isDark ? "bg-indigo-600 text-white" : "bg-indigo-500 text-white"
-                : isDark ? "bg-gray-700 text-gray-300 hover:bg-gray-600" : "bg-gray-200 text-gray-700 hover:bg-gray-300"
-            }`}
-          >
-            <Info className="w-4 h-4" />
-            Why Blockchain?
-          </button>
-          
-          <button
-            onClick={() => setShowTechnicalDetails(!showTechnicalDetails)}
-            className={`px-3 py-2 rounded-lg font-medium flex items-center gap-2 transition-colors text-sm ${
-              showTechnicalDetails 
-                ? isDark ? "bg-purple-600 text-white" : "bg-purple-500 text-white"
-                : isDark ? "bg-gray-700 text-gray-300 hover:bg-gray-600" : "bg-gray-200 text-gray-700 hover:bg-gray-300"
-            }`}
-          >
-            <BookOpen className="w-4 h-4" />
-            Technical Details
-          </button>
-        </div>
       </div>
-
-      {/* Why Blockchain Educational Panel */}
-      {showWhyBlockchain && (
-        <div className={`mb-6 p-6 rounded-xl shadow-lg border ${isDark ? "bg-gray-800 border-gray-700" : "bg-white border-gray-200"}`}>
-          <h3 className="text-xl font-bold mb-4 flex items-center gap-2">
-            <ShieldCheck className="w-6 h-6 text-blue-500" />
-            Why We Use Blockchain for the Ledger
-          </h3>
-          
-          <div className="overflow-x-auto mb-6">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className={isDark ? "bg-gray-700" : "bg-gray-100"}>
-                  <th className="p-3 text-left font-semibold">Traditional Database Ledger</th>
-                  <th className="p-3 text-left font-semibold text-green-600">Blockchain Ledger</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr className={isDark ? "border-b border-gray-700" : "border-b border-gray-200"}>
-                  <td className="p-3 flex items-start gap-2">
-                    <AlertTriangle className="w-4 h-4 text-red-500 mt-0.5 flex-shrink-0" />
-                    <span>Records can be altered after creation</span>
-                  </td>
-                  <td className="p-3">
-                    <div className="flex items-start gap-2">
-                      <CheckCircle2 className="w-4 h-4 text-green-500 mt-0.5 flex-shrink-0" />
-                      <span>Records are immutable once written</span>
-                    </div>
-                  </td>
-                </tr>
-                <tr className={isDark ? "border-b border-gray-700" : "border-b border-gray-200"}>
-                  <td className="p-3 flex items-start gap-2">
-                    <AlertTriangle className="w-4 h-4 text-red-500 mt-0.5 flex-shrink-0" />
-                    <span>No way to prove data hasn't been changed</span>
-                  </td>
-                  <td className="p-3">
-                    <div className="flex items-start gap-2">
-                      <CheckCircle2 className="w-4 h-4 text-green-500 mt-0.5 flex-shrink-0" />
-                      <span>Cryptographic proof of data integrity</span>
-                    </div>
-                  </td>
-                </tr>
-                <tr className={isDark ? "border-b border-gray-700" : "border-b border-gray-200"}>
-                  <td className="p-3 flex items-start gap-2">
-                    <AlertTriangle className="w-4 h-4 text-red-500 mt-0.5 flex-shrink-0" />
-                    <span>Audit trail can be manipulated</span>
-                  </td>
-                  <td className="p-3">
-                    <div className="flex items-start gap-2">
-                      <CheckCircle2 className="w-4 h-4 text-green-500 mt-0.5 flex-shrink-0" />
-                      <span>Complete, unalterable audit trail</span>
-                    </div>
-                  </td>
-                </tr>
-                <tr>
-                  <td className="p-3 flex items-start gap-2">
-                    <AlertTriangle className="w-4 h-4 text-red-500 mt-0.5 flex-shrink-0" />
-                    <span>Verification requires trust in administrators</span>
-                  </td>
-                  <td className="p-3">
-                    <div className="flex items-start gap-2">
-                      <CheckCircle2 className="w-4 h-4 text-green-500 mt-0.5 flex-shrink-0" />
-                      <span>Anyone can independently verify integrity</span>
-                    </div>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-
-          <div className="grid md:grid-cols-2 gap-4">
-            <div className={`p-4 rounded-lg ${isDark ? "bg-gray-700" : "bg-blue-50"}`}>
-              <div className="flex items-start gap-3">
-                <Lock className="w-5 h-5 text-blue-500 mt-1" />
-                <div>
-                  <h4 className="font-bold mb-1">Permanent Record Keeping</h4>
-                  <p className="text-sm opacity-80">Every transaction is permanently recorded. No one can delete or modify past records.</p>
-                </div>
-              </div>
-            </div>
-            
-            <div className={`p-4 rounded-lg ${isDark ? "bg-gray-700" : "bg-green-50"}`}>
-              <div className="flex items-start gap-3">
-                <Eye className="w-5 h-5 text-green-500 mt-1" />
-                <div>
-                  <h4 className="font-bold mb-1">Complete Transparency</h4>
-                  <p className="text-sm opacity-80">Full audit trail available for verification. Every change is traceable.</p>
-                </div>
-              </div>
-            </div>
-            
-            <div className={`p-4 rounded-lg ${isDark ? "bg-gray-700" : "bg-purple-50"}`}>
-              <div className="flex items-start gap-3">
-                <ShieldCheck className="w-5 h-5 text-purple-500 mt-1" />
-                <div>
-                  <h4 className="font-bold mb-1">Tamper Detection</h4>
-                  <p className="text-sm opacity-80">Any attempt to alter historical data immediately breaks the chain and is detected.</p>
-                </div>
-              </div>
-            </div>
-            
-            <div className={`p-4 rounded-lg ${isDark ? "bg-gray-700" : "bg-orange-50"}`}>
-              <div className="flex items-start gap-3">
-                <Globe className="w-5 h-5 text-orange-500 mt-1" />
-                <div>
-                  <h4 className="font-bold mb-1">Independent Verification</h4>
-                  <p className="text-sm opacity-80">Users don't need to trust us - they can verify the data themselves.</p>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {showTechnicalDetails && (
-        <div className={`mb-6 p-6 rounded-xl shadow-lg border ${isDark ? "bg-gray-800 border-gray-700" : "bg-white border-gray-200"}`}>
-          <h3 className="text-xl font-bold mb-4 flex items-center gap-2">
-            <Fingerprint className="w-6 h-6 text-purple-500" />
-            How the Immutable Ledger Works
-          </h3>
-          
-          <div className="space-y-4">
-            <div className={`p-4 rounded-lg border-l-4 border-blue-500 ${isDark ? "bg-gray-700" : "bg-blue-50"}`}>
-              <h4 className="font-bold mb-2 flex items-center gap-2">
-                <LinkIcon className="w-4 h-4" />
-                Hash Linking (Chain Structure)
-              </h4>
-              <p className="text-sm mb-2">
-                Each block contains a hash (cryptographic fingerprint) of the previous block. This creates an unbreakable chain:
-              </p>
-              <div className="font-mono text-xs space-y-1 ml-4">
-                <div>Block #1: Hash = abc123...</div>
-                <div>Block #2: prevHash = abc123..., Hash = def456...</div>
-                <div>Block #3: prevHash = def456..., Hash = ghi789...</div>
-              </div>
-              <p className="text-sm mt-2">
-                If someone tries to change Block #1, its hash changes, which breaks Block #2, which breaks Block #3, and so on. 
-                The entire chain becomes invalid.
-              </p>
-            </div>
-
-            <div className={`p-4 rounded-lg border-l-4 border-green-500 ${isDark ? "bg-gray-700" : "bg-green-50"}`}>
-              <h4 className="font-bold mb-2">Immutability Guarantee</h4>
-              <p className="text-sm">
-                Once a block is added to the ledger, it cannot be changed without:
-              </p>
-              <ul className="text-sm space-y-1 ml-4 mt-2">
-                <li>• Recalculating the hash of the modified block</li>
-                <li>• Recalculating ALL subsequent block hashes</li>
-                <li>• Doing this faster than new blocks are added</li>
-              </ul>
-              <p className="text-sm mt-2 font-semibold">
-                This is computationally infeasible, making the ledger effectively immutable.
-              </p>
-            </div>
-
-            <div className={`p-4 rounded-lg ${isDark ? "bg-black/20" : "bg-gray-100"}`}>
-              <h4 className="font-bold mb-2 flex items-center gap-2">
-                <Hash className="w-4 h-4" />
-                SHA-256 Cryptographic Hashing
-              </h4>
-              <p className="text-sm mb-2">
-                We use SHA-256, the same algorithm as Bitcoin, to create block hashes:
-              </p>
-              <div className="space-y-2 font-mono text-xs">
-                <div>
-                  <span className="opacity-60">Input: </span>
-                  <span className="text-blue-500">Block #5 data</span>
-                </div>
-                <div>
-                  <span className="opacity-60">SHA-256: </span>
-                  <span className="text-green-500">a7f8b9c0d1e2f3a4b5c6d7e8f9a0b1c2...</span>
-                </div>
-                <div className="border-t border-gray-300 dark:border-gray-600 my-2"></div>
-                <div>
-                  <span className="opacity-60">Input: </span>
-                  <span className="text-red-500">Block #5 data (modified)</span>
-                </div>
-                <div>
-                  <span className="opacity-60">SHA-256: </span>
-                  <span className="text-red-500">x1y2z3a4b5c6d7e8f9a0b1c2d3e4f5a6...</span>
-                  <span className="opacity-60"> (completely different!)</span>
-                </div>
-              </div>
-            </div>
-
-            <div className={`p-4 rounded-lg border-l-4 border-purple-500 ${isDark ? "bg-gray-700" : "bg-purple-50"}`}>
-              <h4 className="font-bold mb-2">Integrity Verification Process</h4>
-              <p className="text-sm">
-                The system continuously verifies integrity by:
-              </p>
-              <ol className="text-sm space-y-1 ml-4 mt-2 list-decimal">
-                <li>Recalculating the hash of each block from its data</li>
-                <li>Comparing the calculated hash with the stored hash</li>
-                <li>Verifying each block's prevHash matches the previous block's hash</li>
-                <li>Checking external databases match the ledger totals</li>
-              </ol>
-              <p className="text-sm mt-2">
-                Any mismatch immediately triggers an integrity alert.
-              </p>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Ledger Impact Metrics */}
       <div className={`mb-6 p-6 rounded-xl shadow-lg ${isDark ? "bg-gradient-to-r from-indigo-900/50 to-purple-900/50 border border-indigo-700" : "bg-gradient-to-r from-indigo-50 to-purple-50 border border-indigo-200"}`}>
@@ -455,7 +234,7 @@ const LedgerTab = () => {
                           {chainVerification && !chainVerification.valid && (
                               <div className={`text-xs flex items-center gap-2 flex-wrap ${isDark ? 'text-red-300' : 'text-red-700'}`}>
                                   <LinkIcon className="w-3 h-3" /> 
-                                  Blockchain Broken at Blocks: {chainVerification.invalidBlocks.join(', ')}
+                                  Ledger Chain Broken at Blocks: {chainVerification.invalidBlocks.join(', ')}
                                   {chainVerification.invalidBlocks.length > 0 && (() => {
                                     const firstBroken = Math.min(...chainVerification.invalidBlocks);
                                     const posInFiltered = filteredBlocks.findIndex(b => b.index === firstBroken);
@@ -478,11 +257,17 @@ const LedgerTab = () => {
                                   External Data Check Failed: {externalDataStatus.reason}
                               </div>
                           )}
+                          {txPointsTamperStatus && !txPointsTamperStatus.valid && (
+                              <div className={`text-xs flex items-center gap-2 ${isDark ? 'text-red-300' : 'text-red-700'}`}>
+                                  <ShieldAlert className="w-3 h-3" /> 
+                                  Transaction Points Tampered: {txPointsTamperStatus.tampered?.length ?? 0} block(s) affected. Go to Integrity Verification tab to restore.
+                              </div>
+                          )}
                       </div>
                   )}
               </div>
               <button
-                onClick={() => runVerification(true)} // ✨ ENHANCED: Immediate refresh
+                onClick={() => runVerification(true)}
                 disabled={verifying}
                 className={`flex-shrink-0 flex items-center px-3 py-1 text-xs rounded-full font-semibold transition-colors ${
                   isDark ? 'bg-indigo-700 hover:bg-indigo-800 text-white' : 'bg-indigo-600 hover:bg-indigo-700 text-white'
@@ -493,7 +278,7 @@ const LedgerTab = () => {
           </div>
       </div>
 
-      {/* External Data Integrity Status */}
+      {/* External Data Integrity Alert */}
       {externalDataStatus && !externalDataStatus.valid && (
           <div className={`flex items-start p-4 mb-6 rounded-xl border animate-in slide-in-from-top-2 fade-in ${
               isDark ? "bg-red-900/30 border-red-700 text-red-300" : "bg-red-50 border-red-200 text-red-800"
@@ -522,6 +307,37 @@ const LedgerTab = () => {
                   </p>
               </div>
           </div>
+      )}
+
+      {/* Transaction Points Tamper Banner — compact, links to Integrity Verification tab for recovery */}
+      {txPointsTamperStatus && !txPointsTamperStatus.valid && !txPointsTamperStatus.skipped && (
+        <div className={`flex items-start p-4 mb-6 rounded-xl border animate-in slide-in-from-top-2 fade-in ${
+          isDark ? "bg-red-900/30 border-red-700 text-red-300" : "bg-red-50 border-red-200 text-red-800"
+        }`}>
+          <ShieldAlert className="w-5 h-5 mr-3 flex-shrink-0 mt-1" />
+          <div className="flex-1">
+            <h4 className="font-bold">POINTS INTEGRITY ALERT: Tampered Transaction Values</h4>
+            <p className="text-sm mt-1 mb-2">{txPointsTamperStatus.reason}</p>
+            <div className="space-y-1">
+              {txPointsTamperStatus.tampered?.map(entry => (
+                <div key={entry.blockId} className={`text-xs font-mono ${isDark ? 'text-red-200' : 'text-red-700'}`}>
+                  Block #{entry.blockIndex} · {entry.actionType} · User: {entry.userId}
+                  {entry.issue === 'POINTS_MISMATCH' && (
+                    <span className="ml-2">
+                      Sealed: <strong>{entry.sealedPoints} pts</strong> → Live: <strong className="text-red-500">{entry.livePoints} pts</strong>
+                    </span>
+                  )}
+                  {entry.issue === 'TRANSACTION_DELETED' && (
+                    <span className="ml-2 text-orange-400">Transaction document deleted</span>
+                  )}
+                </div>
+              ))}
+            </div>
+            <p className={`text-xs mt-2 font-semibold ${isDark ? 'text-red-300' : 'text-red-700'}`}>
+              → Go to the <strong>Integrity Verification</strong> tab to restore the correct values and fix the user balance.
+            </p>
+          </div>
+        </div>
       )}
 
       {/* Search Bar */}
@@ -553,6 +369,11 @@ const LedgerTab = () => {
                     · ⚠ {invalidBlockIndices.size} broken block{invalidBlockIndices.size > 1 ? 's' : ''}: #{[...invalidBlockIndices].sort((a,b)=>a-b).join(', #')}
                   </span>
                 )}
+                {tamperedPointsBlockIds.size > 0 && (
+                  <span className="ml-2 text-orange-500 font-semibold">
+                    · 🔢 {tamperedPointsBlockIds.size} tampered point value{tamperedPointsBlockIds.size > 1 ? 's' : ''}
+                  </span>
+                )}
               </span>
               <div className="flex items-center gap-2">
                 <button
@@ -572,19 +393,40 @@ const LedgerTab = () => {
 
           {paginatedBlocks.map((block) => {
             const isBroken = invalidBlockIndices.has(block.index);
+            const hasTamperedPoints = tamperedPointsBlockIds.has(block.id);
+            const tamperedEntry = tamperedPointsMap[block.id];
             return (
             <div 
               key={block.id} 
               className={`p-3 sm:p-4 rounded-xl shadow-sm border overflow-hidden transition-colors ${
                 isBroken
                   ? isDark ? 'bg-red-900/30 border-red-600 ring-1 ring-red-500' : 'bg-red-50 border-red-400 ring-1 ring-red-400'
-                  : isDark ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-100'
+                  : hasTamperedPoints
+                    ? isDark ? 'bg-orange-900/30 border-orange-600 ring-1 ring-orange-500' : 'bg-orange-50 border-orange-400 ring-1 ring-orange-400'
+                    : isDark ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-100'
               }`}
             >
               {isBroken && (
                 <div className={`flex items-center gap-2 mb-3 px-3 py-2 rounded-lg text-xs font-bold ${isDark ? 'bg-red-800/50 text-red-200' : 'bg-red-100 text-red-700'}`}>
                   <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
-                  BROKEN / COMPROMISED — Hash chain is broken at this block. Run Repair Chain in the Blockchain tab.
+                  BROKEN / COMPROMISED — Hash chain is broken at this block. Run Repair Chain in the Integrity Verification tab.
+                </div>
+              )}
+
+              {/* Tampered points warning banner (orange, separate from hash-broken red) */}
+              {hasTamperedPoints && !isBroken && (
+                <div className={`flex items-center gap-2 mb-3 px-3 py-2 rounded-lg text-xs font-bold ${isDark ? 'bg-orange-800/50 text-orange-200' : 'bg-orange-100 text-orange-800'}`}>
+                  <ShieldAlert className="w-3.5 h-3.5 flex-shrink-0" />
+                  POINTS TAMPERED — Live transaction points differ from sealed ledger value.
+                  {tamperedEntry?.issue === 'POINTS_MISMATCH' && (
+                    <span className="ml-1 font-mono">
+                      Sealed: {tamperedEntry.sealedPoints} pts · Live: {tamperedEntry.livePoints} pts
+                    </span>
+                  )}
+                  {tamperedEntry?.issue === 'TRANSACTION_DELETED' && (
+                    <span className="ml-1">Linked transaction document was deleted.</span>
+                  )}
+                  &nbsp;→ Restore in Blockchain tab.
                 </div>
               )}
 
@@ -593,12 +435,20 @@ const LedgerTab = () => {
                       <div className={`font-bold w-9 h-9 sm:w-10 sm:h-10 rounded-full flex items-center justify-center flex-shrink-0 ${
                         isBroken
                           ? isDark ? 'bg-red-800/60 text-red-300' : 'bg-red-200 text-red-700'
-                          : isDark ? 'bg-indigo-900/50 text-indigo-300' : 'bg-indigo-50 text-indigo-700'
+                          : hasTamperedPoints
+                            ? isDark ? 'bg-orange-800/60 text-orange-300' : 'bg-orange-200 text-orange-700'
+                            : isDark ? 'bg-indigo-900/50 text-indigo-300' : 'bg-indigo-50 text-indigo-700'
                       }`}>
                           <Box className='w-4 h-4 sm:w-5 sm:h-5'/>
                       </div>
                       <div className="min-w-0 flex-1">
-                          <div className={`font-semibold text-sm sm:text-base truncate ${isBroken ? isDark ? 'text-red-300' : 'text-red-700' : isDark ? 'text-white' : 'text-gray-800'}`}>
+                          <div className={`font-semibold text-sm sm:text-base truncate ${
+                            isBroken
+                              ? isDark ? 'text-red-300' : 'text-red-700'
+                              : hasTamperedPoints
+                                ? isDark ? 'text-orange-300' : 'text-orange-700'
+                                : isDark ? 'text-white' : 'text-gray-800'
+                          }`}>
                               Block #{block.index} - {block.actionType}
                           </div>
                           <div className={`text-xs sm:text-sm mt-1 flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-4 ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
@@ -614,15 +464,33 @@ const LedgerTab = () => {
                   </div>
 
                   <div className="text-right flex flex-col items-end shrink-0">
-                      <div className={`font-bold text-base sm:text-xl ${block.points > 0 ? 'text-green-500' : block.points < 0 ? 'text-red-500' : 'text-gray-400'}`}>
-                          {block.points > 0 ? `+${block.points}` : block.points} Pts
-                      </div>
+                      {/* Show both sealed and live values when tampered */}
+                      {hasTamperedPoints && tamperedEntry?.issue === 'POINTS_MISMATCH' ? (
+                        <div className="text-right">
+                          <div className={`font-bold text-base sm:text-xl line-through opacity-60 ${isDark ? 'text-orange-400' : 'text-orange-600'}`}>
+                            {tamperedEntry.livePoints > 0 ? `+${tamperedEntry.livePoints}` : tamperedEntry.livePoints} Pts
+                          </div>
+                          <div className={`font-bold text-sm ${isDark ? 'text-green-400' : 'text-green-700'}`}>
+                            Sealed: {tamperedEntry.sealedPoints > 0 ? `+${tamperedEntry.sealedPoints}` : tamperedEntry.sealedPoints} Pts
+                          </div>
+                        </div>
+                      ) : (
+                        <div className={`font-bold text-base sm:text-xl ${block.points > 0 ? 'text-green-500' : block.points < 0 ? 'text-red-500' : 'text-gray-400'}`}>
+                            {block.points > 0 ? `+${block.points}` : block.points} Pts
+                        </div>
+                      )}
                       <span className={`text-xs mt-1 px-2 py-0.5 rounded ${
                         isBroken || block.isValid === false
                           ? 'bg-red-500 text-white'
-                          : isDark ? 'bg-gray-700 text-gray-300' : 'bg-gray-100 text-gray-600'
+                          : hasTamperedPoints
+                            ? 'bg-orange-500 text-white'
+                            : isDark ? 'bg-gray-700 text-gray-300' : 'bg-gray-100 text-gray-600'
                       }`}>
-                          {isBroken || block.isValid === false ? 'INVALID' : 'VALID'}
+                          {isBroken || block.isValid === false
+                            ? 'INVALID'
+                            : hasTamperedPoints
+                              ? 'TAMPERED'
+                              : 'VALID'}
                       </span>
                   </div>
               </div>
@@ -659,7 +527,7 @@ const LedgerTab = () => {
 
               {expandedBlock === block.id && block.metadata && (
                   <div className="mt-2">
-                      {(block.actionType === 'WASTE_SUBMITTED' || block.actionType === 'REWARD_REDEEMED') && (
+                      {(block.actionType === 'WASTE_SUBMIT' || block.actionType === 'REWARD_REDEEMED') && (
                           <div className={`p-3 mb-2 rounded-lg border-l-4 animate-in slide-in-from-top-2 fade-in ${isDark ? "bg-yellow-900/20 border-yellow-500 text-yellow-300" : "bg-yellow-50 border-yellow-500 text-yellow-800"}`}>
                               <p className="text-sm font-semibold flex items-center gap-2">
                                   <Info className="w-4 h-4" />
@@ -674,9 +542,27 @@ const LedgerTab = () => {
                         isDark ? "bg-black/20 border-gray-700" : "bg-gray-50 border-gray-100"
                       }`}>
                           {Object.entries(block.metadata).map(([key, value]) => (
-                            <div key={key} className={`px-2 py-1 rounded truncate ${isDark ? "bg-gray-700/50" : "bg-white border border-gray-100"}`}>
-                               <span className={`mr-1 capitalize ${isDark ? "text-gray-400" : "text-gray-500"}`}>{key}:</span>
-                               <strong className={`${isDark ? "text-white" : "text-gray-800"}`}>{String(value)}</strong>
+                            <div
+                              key={key}
+                              className={`px-2 py-1 rounded truncate ${
+                                key === 'txPoints'
+                                  ? isDark ? 'bg-green-900/40 border border-green-700' : 'bg-green-50 border border-green-200'
+                                  : isDark ? "bg-gray-700/50" : "bg-white border border-gray-100"
+                              }`}
+                            >
+                               <span className={`mr-1 capitalize ${
+                                 key === 'txPoints'
+                                   ? isDark ? 'text-green-400' : 'text-green-700'
+                                   : isDark ? "text-gray-400" : "text-gray-500"
+                               }`}>{key}:</span>
+                               <strong className={`${
+                                 key === 'txPoints'
+                                   ? isDark ? 'text-green-300' : 'text-green-800'
+                                   : isDark ? "text-white" : "text-gray-800"
+                               }`}>{String(value)}</strong>
+                               {key === 'txPoints' && (
+                                 <span className={`ml-1 text-[10px] ${isDark ? 'text-green-500' : 'text-green-600'}`}>🔒</span>
+                               )}
                             </div>
                           ))}
                       </div>
@@ -718,23 +604,6 @@ const LedgerTab = () => {
         </div>
       )}
 
-      {/* Educational Info Box */}
-      <div className={`mt-8 p-6 rounded-xl border-l-4 ${
-        isDark ? "bg-blue-900/20 border-blue-500 text-blue-300" : "bg-blue-50 border-blue-500 text-blue-800"
-      }`}>
-        <h4 className="font-bold mb-2 flex items-center gap-2">
-          <Info className="w-5 h-5" />
-          Understanding the Immutable Ledger
-        </h4>
-        <p className={`text-sm mb-2 ${isDark ? "text-blue-200" : "text-blue-700"}`}>
-          This ledger uses blockchain technology to create a permanent, tamper-proof record of all waste reward transactions. 
-          Each block is cryptographically linked to the previous one, making it impossible to alter historical data without detection.
-        </p>
-        <p className={`text-sm ${isDark ? "text-blue-200" : "text-blue-700"}`}>
-          This ensures transparency and builds trust in the waste management reward system, directly supporting SDG 16 
-          (Strong Institutions) by preventing corruption and ensuring accountability.
-        </p>
-      </div>
     </div>
   );
 };

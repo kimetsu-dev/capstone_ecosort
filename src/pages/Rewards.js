@@ -701,27 +701,11 @@ export default function Rewards() {
       const newStock = result.newStock;
       const redemptionIds = [result.redemptionId];
 
-      // Ledger entry — log total cost as a single ledger event
+      // Create point_transaction FIRST so we can link its Firestore ID into the
+      // ledger block — required for tamper-detection cross-referencing.
+      let pointTxId = null;
       try {
-        await addToLedger(
-          currentUser.uid,
-          "REWARD_REDEEMED",
-          -Math.abs(totalCost),
-          {
-            rewardId: reward.id,
-            rewardName: reward.name,
-            quantity,
-            redemptionCode: code,
-            firestoreIds: redemptionIds,
-          }
-        );
-      } catch (ledgerError) {
-        console.error("⚠️ Ledger Error:", ledgerError);
-      }
-
-      // Single point_transactions record summarising the batch
-      try {
-        await addDoc(collection(db, "point_transactions"), {
+        const ptRef = await addDoc(collection(db, "point_transactions"), {
           userId: currentUser.uid,
           type: "points_redeemed",
           points: -Math.abs(totalCost),
@@ -733,8 +717,30 @@ export default function Rewards() {
           category: reward.category || "reward",
           timestamp: serverTimestamp(),
         });
+        pointTxId = ptRef.id;
       } catch (txError) {
         console.error("⚠️ Warning: Failed to create transaction record:", txError);
+      }
+
+      // Ledger entry — log total cost as a single ledger event.
+      // firestoreId (singular) links to the point_transaction doc above so the
+      // tamper-checker (verifyTransactionPointsTampering) can cross-reference it.
+      try {
+        await addToLedger(
+          currentUser.uid,
+          "REWARD_REDEEMED",
+          -Math.abs(totalCost),
+          {
+            rewardId: reward.id,
+            rewardName: reward.name,
+            quantity,
+            redemptionCode: code,
+            redemptionIds,
+            ...(pointTxId ? { firestoreId: pointTxId } : {}),
+          }
+        );
+      } catch (ledgerError) {
+        console.error("⚠️ Ledger Error:", ledgerError);
       }
 
       setUserPoints(newPoints);
