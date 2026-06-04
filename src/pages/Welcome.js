@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from "react-router-dom";
 import { useTheme } from '../contexts/ThemeContext';
 
-// Icon components with modern styling
+// Icon components
 const RecycleIcon = ({ className = "w-6 h-6" }) => (
   <svg className={className} fill="currentColor" viewBox="0 0 24 24">
     <path d="M12 2L13.5 6.5L18 8L13.5 9.5L12 14L10.5 9.5L6 8L10.5 6.5L12 2Z" opacity="0.6"/>
@@ -28,101 +28,95 @@ const SparkleIcon = ({ className = "w-4 h-4" }) => (
   </svg>
 );
 
-/* ---------------- MULTI-OS INSTALL COMPONENT ---------------- */
+/* ---------------- INSTALL PWA COMPONENT ---------------- */
+// Single instance only — renders both the auto-popup and the install card.
+// Pass disableAutoPopup={true} to suppress the timed overlay (for secondary placements).
 function InstallPWA({ disableAutoPopup = false }) {
   const [deferredPrompt, setDeferredPrompt] = useState(null);
   const [isVisible, setIsVisible] = useState(false);
-  const [osType, setOsType] = useState('unknown'); // 'ios', 'android', 'windows', 'macos', 'linux', 'unknown'
+  const [osType, setOsType] = useState('unknown');
   const [showInstructions, setShowInstructions] = useState(false);
   const [showAutoPopup, setShowAutoPopup] = useState(false);
 
   useEffect(() => {
-    // Check if already in standalone mode
-    const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+    // Don't show anything if already installed as PWA
+    const isStandalone =
+      window.matchMedia('(display-mode: standalone)').matches ||
+      window.navigator.standalone === true;
     if (isStandalone) return;
 
-    // Check if user has dismissed the popup before (only for auto-popup, NOT for button visibility)
+    // Respect previous dismissal choices
     const dismissedPopup = localStorage.getItem('ecosort-install-dismissed');
     const dismissedTime = localStorage.getItem('ecosort-install-dismissed-time');
-    
     let shouldShowPopup = true;
-    
-    // If "Don't show again" was selected, never show AUTO-POPUP
+
     if (dismissedPopup === 'permanent') {
       shouldShowPopup = false;
     }
-    
-    // If "Remind me later" was selected, show again after 7 days
     if (dismissedPopup === 'temporary' && dismissedTime) {
-      const daysSinceDismissed = (Date.now() - parseInt(dismissedTime)) / (1000 * 60 * 60 * 24);
-      if (daysSinceDismissed < 7) {
-        shouldShowPopup = false;
-      }
+      const daysSince = (Date.now() - parseInt(dismissedTime)) / (1000 * 60 * 60 * 24);
+      if (daysSince < 7) shouldShowPopup = false;
     }
 
-    // Detect Operating System
-    const userAgent = window.navigator.userAgent.toLowerCase();
+    // Detect OS
+    const ua = window.navigator.userAgent.toLowerCase();
     const platform = window.navigator.platform.toLowerCase();
-    
     let detectedOS = 'unknown';
-    
-    if (/iphone|ipad|ipod/.test(userAgent)) {
-      detectedOS = 'ios';
-      setIsVisible(true); // Always show install card for iOS
-    } else if (/android/.test(userAgent)) {
-      detectedOS = 'android';
-      setIsVisible(true); // Always show for Android
-    } else if (/win/.test(platform)) {
-      detectedOS = 'windows';
-      setIsVisible(true); // Always show for Windows
-    } else if (/mac/.test(platform)) {
-      detectedOS = 'macos';
-      setIsVisible(true); // Always show for macOS
-    } else if (/linux/.test(platform)) {
-      detectedOS = 'linux';
-      setIsVisible(true); // Always show for Linux
-    }
-    
+
+    if (/iphone|ipad|ipod/.test(ua)) detectedOS = 'ios';
+    else if (/android/.test(ua)) detectedOS = 'android';
+    else if (/win/.test(platform)) detectedOS = 'windows';
+    else if (/mac/.test(platform)) detectedOS = 'macos';
+    else if (/linux/.test(platform)) detectedOS = 'linux';
+
     setOsType(detectedOS);
+    if (detectedOS !== 'unknown') setIsVisible(true);
 
-    // Show auto-popup after 3 seconds (only if not dismissed and not explicitly disabled)
-    let popupTimer;
+    // Auto-popup after 3 s (only once, only if not dismissed)
+    let timer;
     if (shouldShowPopup && !disableAutoPopup) {
-      popupTimer = setTimeout(() => {
-        setShowAutoPopup(true);
-      }, 3000);
+      timer = setTimeout(() => setShowAutoPopup(true), 3000);
     }
 
-    // Detect PWA install prompt (works on Android, Windows, macOS, Linux via Chrome/Edge)
+    // Native install prompt (Chrome / Edge on Android, Windows, macOS, Linux)
     const handler = (e) => {
       e.preventDefault();
       setDeferredPrompt(e);
       setIsVisible(true);
     };
+    window.addEventListener('beforeinstallprompt', handler);
 
-    window.addEventListener("beforeinstallprompt", handler);
-    
     return () => {
-      if (popupTimer) clearTimeout(popupTimer);
-      window.removeEventListener("beforeinstallprompt", handler);
+      clearTimeout(timer);
+      window.removeEventListener('beforeinstallprompt', handler);
     };
   }, [disableAutoPopup]);
 
-  const handleInstallClick = () => {
-    if (osType === 'ios') {
-      setShowInstructions(!showInstructions);
-    } else if (deferredPrompt) {
-      // Use the native install prompt for supported browsers
+  /* --- Helpers --- */
+  const getOSLabel = () => {
+    const labels = { ios: 'iOS', android: 'Android', windows: 'Windows', macos: 'macOS', linux: 'Linux' };
+    return labels[osType] || 'Your Device';
+  };
+
+  const triggerNativeOrInstructions = () => {
+    if (deferredPrompt && osType !== 'ios') {
       deferredPrompt.prompt();
-      deferredPrompt.userChoice.then((choiceResult) => {
-        if (choiceResult.outcome === "accepted") {
-          setIsVisible(false);
-        }
+      deferredPrompt.userChoice.then((result) => {
+        if (result.outcome === 'accepted') setIsVisible(false);
         setDeferredPrompt(null);
       });
     } else {
-      // Show manual instructions for browsers that support PWA but event didn't fire
-      setShowInstructions(!showInstructions);
+      setShowInstructions((v) => !v);
+    }
+  };
+
+  const handleInstallFromPopup = () => {
+    setShowAutoPopup(false);
+    triggerNativeOrInstructions();
+    if (osType !== 'ios' && deferredPrompt) {
+      // instructions toggled inside triggerNative, nothing extra needed
+    } else {
+      setShowInstructions(true);
     }
   };
 
@@ -130,61 +124,41 @@ function InstallPWA({ disableAutoPopup = false }) {
     setShowAutoPopup(false);
     if (type === 'permanent') {
       localStorage.setItem('ecosort-install-dismissed', 'permanent');
-    } else if (type === 'temporary') {
+    } else {
       localStorage.setItem('ecosort-install-dismissed', 'temporary');
       localStorage.setItem('ecosort-install-dismissed-time', Date.now().toString());
     }
   };
 
-  const handleInstallFromPopup = () => {
-    setShowAutoPopup(false);
-    if (osType === 'ios') {
-      setShowInstructions(true);
-    } else if (deferredPrompt) {
-      deferredPrompt.prompt();
-      deferredPrompt.userChoice.then((choiceResult) => {
-        if (choiceResult.outcome === "accepted") {
-          setIsVisible(false);
-          localStorage.setItem('ecosort-install-dismissed', 'permanent');
-        }
-        setDeferredPrompt(null);
-      });
-    } else {
-      setShowInstructions(true);
-    }
-  };
-
-  // Get OS-specific instructions
   const getInstructions = () => {
-    switch(osType) {
+    switch (osType) {
       case 'ios':
         return (
           <ol className="list-none space-y-3">
             <li className="flex gap-3 items-start">
               <span className="flex-shrink-0 w-5 h-5 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center font-bold text-xs">1</span>
-              <span>Tap the <span className="font-bold text-gray-800">Share</span> button <span className="inline-block px-1 bg-gray-200 rounded text-xs">⎋</span> in Safari.</span>
+              <span>Tap the <strong className="text-gray-800">Share</strong> button <span className="inline-block px-1 bg-gray-200 rounded text-xs">⎋</span> in Safari.</span>
             </li>
             <li className="flex gap-3 items-start">
               <span className="flex-shrink-0 w-5 h-5 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center font-bold text-xs">2</span>
-              <span>Scroll down and select <span className="font-bold text-gray-800">"Add to Home Screen"</span>.</span>
+              <span>Select <strong className="text-gray-800">"Add to Home Screen"</strong>.</span>
             </li>
             <li className="flex gap-3 items-start">
               <span className="flex-shrink-0 w-5 h-5 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center font-bold text-xs">3</span>
-              <span>Tap <span className="font-bold text-gray-800">Add</span> at the top right corner.</span>
+              <span>Tap <strong className="text-gray-800">Add</strong> at the top right.</span>
             </li>
           </ol>
         );
-      
       case 'android':
         return (
           <ol className="list-none space-y-3">
             <li className="flex gap-3 items-start">
               <span className="flex-shrink-0 w-5 h-5 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center font-bold text-xs">1</span>
-              <span>Tap the <span className="font-bold text-gray-800">Menu</span> icon (⋮) in Chrome.</span>
+              <span>Tap the <strong className="text-gray-800">Menu</strong> icon (⋮) in Chrome.</span>
             </li>
             <li className="flex gap-3 items-start">
               <span className="flex-shrink-0 w-5 h-5 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center font-bold text-xs">2</span>
-              <span>Select <span className="font-bold text-gray-800">"Install App"</span> or "Add to Home Screen".</span>
+              <span>Select <strong className="text-gray-800">"Install App"</strong> or "Add to Home Screen".</span>
             </li>
             <li className="flex gap-3 items-start">
               <span className="flex-shrink-0 w-5 h-5 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center font-bold text-xs">3</span>
@@ -192,7 +166,6 @@ function InstallPWA({ disableAutoPopup = false }) {
             </li>
           </ol>
         );
-      
       case 'windows':
       case 'macos':
       case 'linux':
@@ -200,22 +173,21 @@ function InstallPWA({ disableAutoPopup = false }) {
           <ol className="list-none space-y-3">
             <li className="flex gap-3 items-start">
               <span className="flex-shrink-0 w-5 h-5 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center font-bold text-xs">1</span>
-              <span>Look for the <span className="font-bold text-gray-800">install icon</span> (⊕) in your browser's address bar.</span>
+              <span>Look for the <strong className="text-gray-800">install icon</strong> (⊕) in your browser's address bar.</span>
             </li>
             <li className="flex gap-3 items-start">
               <span className="flex-shrink-0 w-5 h-5 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center font-bold text-xs">2</span>
-              <span>Click it and select <span className="font-bold text-gray-800">"Install"</span>.</span>
+              <span>Click it and select <strong className="text-gray-800">"Install"</strong>.</span>
             </li>
             <li className="flex gap-3 items-start">
               <span className="flex-shrink-0 w-5 h-5 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center font-bold text-xs">3</span>
-              <span><strong>Or:</strong> Open browser menu (⋮) → <span className="font-bold text-gray-800">"Install ECOSORT"</span> or "Save and share" → "Install app".</span>
+              <span><strong>Or:</strong> Open browser menu (⋮) → <strong className="text-gray-800">"Install Ecosort"</strong>.</span>
             </li>
             <li className="text-xs text-gray-500 italic pl-8">
-              💡 Supported browsers: Chrome, Edge, Brave, Opera
+              💡 Supported: Chrome, Edge, Brave, Opera
             </li>
           </ol>
         );
-      
       default:
         return (
           <ol className="list-none space-y-3">
@@ -225,7 +197,7 @@ function InstallPWA({ disableAutoPopup = false }) {
             </li>
             <li className="flex gap-3 items-start">
               <span className="flex-shrink-0 w-5 h-5 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center font-bold text-xs">2</span>
-              <span>Look for options like <span className="font-bold text-gray-800">"Install App"</span>, "Add to Home Screen", or "Install ECOSORT".</span>
+              <span>Look for <strong className="text-gray-800">"Install App"</strong> or "Add to Home Screen".</span>
             </li>
             <li className="flex gap-3 items-start">
               <span className="flex-shrink-0 w-5 h-5 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center font-bold text-xs">3</span>
@@ -236,102 +208,56 @@ function InstallPWA({ disableAutoPopup = false }) {
     }
   };
 
-  const getOSLabel = () => {
-    switch(osType) {
-      case 'ios': return 'iOS';
-      case 'android': return 'Android';
-      case 'windows': return 'Windows';
-      case 'macos': return 'macOS';
-      case 'linux': return 'Linux';
-      default: return 'Your Device';
-    }
-  };
-
   if (!isVisible) return null;
 
   return (
     <>
-      {/* Auto-popup for first-time visitors */}
+      {/* ── Auto-popup overlay (shown once on first visit) ── */}
       {showAutoPopup && !disableAutoPopup && (
         <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-fade-in">
-          <div className="bg-white rounded-3xl p-6 sm:p-8 max-w-md w-full shadow-2xl animate-slideUp">
+          <div className="bg-white rounded-3xl p-6 sm:p-8 max-w-sm w-full shadow-2xl animate-slideUp">
+            {/* Header */}
             <div className="flex flex-col items-center text-center mb-6">
-              <div className="w-16 h-16 sm:w-20 sm:h-20 bg-gradient-to-br from-emerald-500 to-teal-600 rounded-2xl flex items-center justify-center text-white font-bold text-2xl sm:text-3xl mb-4 shadow-lg">
+              <div className="w-16 h-16 bg-gradient-to-br from-emerald-500 to-teal-600 rounded-2xl flex items-center justify-center text-white font-bold text-3xl mb-4 shadow-lg">
                 E
               </div>
-              <h3 className="text-2xl sm:text-3xl font-bold text-gray-900 mb-2">
-                Install EcoSort
-              </h3>
-              <p className="text-sm text-gray-500">
-                Get the best experience on {getOSLabel()}
-              </p>
+              <h3 className="text-xl font-bold text-gray-900 mb-1">Install Ecosort</h3>
+              <p className="text-sm text-gray-500">Add to your {getOSLabel()} home screen</p>
             </div>
 
-            <div className="space-y-3 mb-6">
-              <div className="bg-emerald-50 rounded-xl p-4">
-                <div className="flex items-start gap-3">
-                  <div className="flex-shrink-0 w-8 h-8 bg-emerald-100 rounded-full flex items-center justify-center">
-                    <svg className="w-5 h-5 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7"/>
-                    </svg>
-                  </div>
-                  <div className="flex-1">
-                    <p className="text-sm font-semibold text-gray-800">Offline Access</p>
-                    <p className="text-xs text-gray-600">Use EcoSort even without internet</p>
-                  </div>
-                </div>
+            {/* Single simple benefit — no offline / perf / notifications */}
+            <div className="bg-emerald-50 rounded-2xl p-4 mb-6 flex items-center gap-3">
+              <div className="flex-shrink-0 w-9 h-9 bg-emerald-100 rounded-full flex items-center justify-center">
+                <svg className="w-5 h-5 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/>
+                </svg>
               </div>
-
-              <div className="bg-blue-50 rounded-xl p-4">
-                <div className="flex items-start gap-3">
-                  <div className="flex-shrink-0 w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center">
-                    <svg className="w-5 h-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
-                    </svg>
-                  </div>
-                  <div className="flex-1">
-                    <p className="text-sm font-semibold text-gray-800">Faster Performance</p>
-                    <p className="text-xs text-gray-600">Native app-like experience</p>
-                  </div>
-                </div>
-              </div>
-
-              <div className="bg-purple-50 rounded-xl p-4">
-                <div className="flex items-start gap-3">
-                  <div className="flex-shrink-0 w-8 h-8 bg-purple-100 rounded-full flex items-center justify-center">
-                    <svg className="w-5 h-5 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/>
-                    </svg>
-                  </div>
-                  <div className="flex-1">
-                    <p className="text-sm font-semibold text-gray-800">Push Notifications</p>
-                    <p className="text-xs text-gray-600">Stay updated on rewards & reports</p>
-                  </div>
-                </div>
+              <div>
+                <p className="text-sm font-semibold text-gray-800">Quick home-screen access</p>
+                <p className="text-xs text-gray-500">Open Ecosort like any other app</p>
               </div>
             </div>
 
+            {/* Actions */}
             <div className="space-y-2">
               <button
                 onClick={handleInstallFromPopup}
-                className="w-full bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white font-bold py-3 rounded-xl transition-all transform hover:scale-105 flex items-center justify-center gap-2"
+                className="w-full bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white font-bold py-3 rounded-xl transition-all flex items-center justify-center gap-2"
               >
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
                 </svg>
                 Install Now
               </button>
-              
               <button
                 onClick={() => handleDismissPopup('temporary')}
-                className="w-full bg-gray-200 hover:bg-gray-300 text-gray-800 font-semibold py-2.5 rounded-xl transition-colors"
+                className="w-full bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold py-2.5 rounded-xl transition-colors text-sm"
               >
                 Remind Me Later
               </button>
-              
               <button
                 onClick={() => handleDismissPopup('permanent')}
-                className="w-full text-gray-500 hover:text-gray-700 font-medium py-2 text-sm transition-colors"
+                className="w-full text-gray-400 hover:text-gray-600 font-medium py-2 text-xs transition-colors"
               >
                 Don't Show Again
               </button>
@@ -340,64 +266,68 @@ function InstallPWA({ disableAutoPopup = false }) {
         </div>
       )}
 
+      {/* ── Inline "Get the App" card ── */}
       <div className="relative max-w-md mx-auto mt-8">
-      {/* Install Button Card */}
-      <div className="relative overflow-hidden bg-gradient-to-r from-emerald-500/10 via-teal-500/10 to-green-500/10 backdrop-blur-xl border border-emerald-200/30 rounded-3xl p-4 sm:p-6">
-        <div className="absolute inset-0 bg-gradient-to-r from-emerald-50/50 via-teal-50/50 to-green-50/50"></div>
-        <div className="relative text-center space-y-3 sm:space-y-4">
-          <div className="flex items-center justify-center gap-2 mb-2 sm:mb-3">
-            <SparkleIcon className="w-4 h-4 sm:w-5 sm:h-5 text-emerald-600" />
-            <span className="font-bold text-emerald-800 text-sm sm:text-base">Get the App</span>
-            <SparkleIcon className="w-4 h-4 sm:w-5 sm:h-5 text-emerald-600" />
-          </div>
-          <p className="text-xs sm:text-sm text-gray-700 leading-relaxed px-2">
-            Install ECOSORT on {getOSLabel()} for a better experience, offline access, and easier waste reporting.
-          </p>
-          <button
-            onClick={handleInstallClick}
-            className="w-full sm:w-auto px-6 py-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 text-white rounded-xl sm:rounded-2xl font-medium hover:shadow-lg transform hover:-translate-y-0.5 transition-all duration-200 text-xs sm:text-sm flex items-center justify-center gap-2 mx-auto"
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
-            {deferredPrompt && osType !== 'ios' ? "Install App" : "How to Install"}
-          </button>
-        </div>
-      </div>
-
-      {/* Instructions Modal / Dropdown */}
-      {showInstructions && (
-        <div className="mt-4 p-4 bg-white/90 backdrop-blur-md border border-gray-200 rounded-2xl shadow-xl animate-fade-in text-left">
-          <div className="flex justify-between items-start mb-3">
-            <div>
-              <h4 className="font-bold text-gray-800">Installation Instructions</h4>
-              <p className="text-xs text-gray-500 mt-1">Install on {getOSLabel()}</p>
+        <div className="relative overflow-hidden bg-gradient-to-r from-emerald-500/10 via-teal-500/10 to-green-500/10 backdrop-blur-xl border border-emerald-200/30 rounded-3xl p-4 sm:p-6">
+          <div className="absolute inset-0 bg-gradient-to-r from-emerald-50/50 via-teal-50/50 to-green-50/50"></div>
+          <div className="relative text-center space-y-3 sm:space-y-4">
+            <div className="flex items-center justify-center gap-2">
+              <SparkleIcon className="w-4 h-4 sm:w-5 sm:h-5 text-emerald-600" />
+              <span className="font-bold text-emerald-800 text-sm sm:text-base">Get the App</span>
+              <SparkleIcon className="w-4 h-4 sm:w-5 sm:h-5 text-emerald-600" />
             </div>
-            <button onClick={() => setShowInstructions(false)} className="text-gray-400 hover:text-gray-600 p-1">
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"/>
+            <p className="text-xs sm:text-sm text-gray-700 leading-relaxed px-2">
+              Install Ecosort on {getOSLabel()} for quick home-screen access and easier waste reporting.
+            </p>
+            <button
+              onClick={triggerNativeOrInstructions}
+              className="w-full sm:w-auto px-6 py-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 text-white rounded-xl sm:rounded-2xl font-medium hover:shadow-lg transform hover:-translate-y-0.5 transition-all duration-200 text-xs sm:text-sm flex items-center justify-center gap-2 mx-auto"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
               </svg>
+              {deferredPrompt && osType !== 'ios' ? 'Install App' : 'How to Install'}
             </button>
           </div>
-          
-          <div className="space-y-3 text-sm text-gray-600">
-            {getInstructions()}
-          </div>
         </div>
-      )}
-    </div>
+
+        {/* Step-by-step instructions (toggled) */}
+        {showInstructions && (
+          <div className="mt-4 p-4 bg-white/90 backdrop-blur-md border border-gray-200 rounded-2xl shadow-xl animate-fade-in text-left">
+            <div className="flex justify-between items-start mb-3">
+              <div>
+                <h4 className="font-bold text-gray-800">How to Install</h4>
+                <p className="text-xs text-gray-500 mt-0.5">Steps for {getOSLabel()}</p>
+              </div>
+              <button onClick={() => setShowInstructions(false)} className="text-gray-400 hover:text-gray-600 p-1">
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"/>
+                </svg>
+              </button>
+            </div>
+            <div className="space-y-3 text-sm text-gray-600">
+              {getInstructions()}
+            </div>
+          </div>
+        )}
+      </div>
     </>
   );
 }
 
+/* ================================================================
+   MAIN WELCOME PAGE
+   ================================================================ */
 export default function Welcome() {
   const navigate = useNavigate();
   const [isVisible, setIsVisible] = useState(false);
   const [activeFeature, setActiveFeature] = useState(0);
-  const { styles, isDark, theme } = useTheme();
+  const { styles, isDark } = useTheme();
 
   useEffect(() => {
     setIsVisible(true);
     const interval = setInterval(() => {
-      setActiveFeature(prev => (prev + 1) % 3);
+      setActiveFeature((prev) => (prev + 1) % 3);
     }, 4000);
     return () => clearInterval(interval);
   }, []);
@@ -405,68 +335,52 @@ export default function Welcome() {
   const features = [
     {
       icon: RecycleIcon,
-      title: "Earn EcoPoints",
-      description: "Transform recyclable waste into valuable rewards through proper segregation and sustainable practices in your community.",
-      gradient: "from-emerald-400 via-teal-500 to-green-600",
-      accent: "emerald",
+      title: 'Earn EcoPoints',
+      description: 'Transform recyclable waste into valuable rewards through proper segregation and sustainable practices in your community.',
+      gradient: 'from-emerald-400 via-teal-500 to-green-600',
     },
     {
       icon: ReportIcon,
-      title: "Report Issues",
-      description: "Maintain community cleanliness by reporting improper waste disposal and connecting with local authorities for resolution.",
-      gradient: "from-orange-400 via-red-500 to-pink-600",
-      accent: "red",
+      title: 'Report Issues',
+      description: 'Maintain community cleanliness by reporting improper waste disposal and connecting with local authorities for resolution.',
+      gradient: 'from-orange-400 via-red-500 to-pink-600',
     },
     {
       icon: CommunityIcon,
-      title: "Community Hub",
-      description: "Connect with neighbors through forums, share environmental ideas, and participate in local sustainability initiatives.",
-      gradient: "from-blue-400 via-indigo-500 to-purple-600",
-      accent: "blue",
+      title: 'Community Hub',
+      description: 'Connect with neighbors through forums, share environmental ideas, and participate in local sustainability initiatives.',
+      gradient: 'from-blue-400 via-indigo-500 to-purple-600',
     },
   ];
 
   return (
     <div className={`relative min-h-screen overflow-hidden ${styles.page}`}>
-      {/* Floating Background Elements */}
+      {/* ── Floating background blobs ── */}
       <div className="absolute inset-0 overflow-hidden pointer-events-none">
-        <div className={`absolute top-20 left-20 w-32 h-32 sm:w-64 sm:h-64 rounded-full blur-3xl animate-pulse ${
-          isDark ? 'bg-emerald-500/10' : 'bg-emerald-200/20'
-        }`}></div>
-        <div className={`absolute bottom-20 right-20 w-48 h-48 sm:w-96 sm:h-96 rounded-full blur-3xl animate-pulse delay-1000 ${
-          isDark ? 'bg-teal-500/10' : 'bg-teal-200/20'
-        }`}></div>
-        <div className={`absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-24 h-24 sm:w-48 sm:h-48 rounded-full blur-2xl animate-pulse delay-2000 ${
-          isDark ? 'bg-green-500/10' : 'bg-green-200/20'
-        }`}></div>
+        <div className={`absolute top-20 left-20 w-32 h-32 sm:w-64 sm:h-64 rounded-full blur-3xl animate-pulse ${isDark ? 'bg-emerald-500/10' : 'bg-emerald-200/20'}`}></div>
+        <div className={`absolute bottom-20 right-20 w-48 h-48 sm:w-96 sm:h-96 rounded-full blur-3xl animate-pulse delay-1000 ${isDark ? 'bg-teal-500/10' : 'bg-teal-200/20'}`}></div>
+        <div className={`absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-24 h-24 sm:w-48 sm:h-48 rounded-full blur-2xl animate-pulse delay-2000 ${isDark ? 'bg-green-500/10' : 'bg-green-200/20'}`}></div>
       </div>
 
-      {/* Navigation */}
-      <nav className={`relative z-50 backdrop-blur-xl border-b sticky top-0 shadow-lg ${
-        isDark ? 'bg-slate-900/70 border-white/10' : 'bg-white/70 border-white/20'
-      }`}>
+      {/* ── Navigation (sticky top) ── */}
+      <nav className={`relative z-50 backdrop-blur-xl border-b sticky top-0 shadow-lg ${isDark ? 'bg-slate-900/70 border-white/10' : 'bg-white/70 border-white/20'}`}>
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3 sm:py-4">
           <div className="flex items-center justify-between">
+            {/* Logo */}
             <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
-              <div className="relative">
-                <div className="w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 bg-gradient-to-br from-emerald-500 via-teal-500 to-green-600 rounded-lg sm:rounded-xl flex items-center justify-center text-white font-bold text-sm sm:text-lg md:text-xl shadow-lg">E</div>
-
+              <div className="w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 bg-gradient-to-br from-emerald-500 via-teal-500 to-green-600 rounded-lg sm:rounded-xl flex items-center justify-center text-white font-bold text-sm sm:text-lg md:text-xl shadow-lg">
+                E
               </div>
-              <div>
-                <span className={`text-lg sm:text-xl md:text-2xl lg:text-3xl font-black bg-gradient-to-r from-emerald-600 via-teal-600 to-green-700 bg-clip-text text-transparent`}>
-                  ECOSORT
-                </span>
-              </div>
+              <span className="text-lg sm:text-xl md:text-2xl lg:text-3xl font-black bg-gradient-to-r from-emerald-600 via-teal-600 to-green-700 bg-clip-text text-transparent">
+                Ecosort
+              </span>
             </div>
 
+            {/* Nav actions */}
             <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
               <button
                 onClick={() => navigate('/support')}
-                className={`hidden sm:flex items-center gap-1.5 px-3 py-2 sm:px-4 sm:py-2 rounded-lg sm:rounded-xl font-medium border transition-all duration-200 text-xs sm:text-sm whitespace-nowrap ${
-                  isDark
-                    ? 'border-gray-600 text-gray-300 bg-slate-800 hover:bg-slate-700 hover:shadow-md'
-                    : 'border-gray-200 text-gray-600 bg-white hover:bg-gray-50 hover:shadow-md'
-                }`}
+                className={`hidden sm:flex items-center gap-1.5 px-3 py-2 sm:px-4 rounded-lg sm:rounded-xl font-medium border transition-all duration-200 text-xs sm:text-sm whitespace-nowrap ${isDark ? 'border-gray-600 text-gray-300 bg-slate-800 hover:bg-slate-700' : 'border-gray-200 text-gray-600 bg-white hover:bg-gray-50'}`}
               >
                 <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18.364 5.636l-3.536 3.536m0 5.656l3.536 3.536M9.172 9.172L5.636 5.636m3.536 9.192l-3.536 3.536M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-5 0a4 4 0 11-8 0 4 4 0 018 0z" />
@@ -475,18 +389,13 @@ export default function Welcome() {
               </button>
               <button
                 onClick={() => navigate('/signup')}
-                className="group bg-emerald-500 text-white rounded-lg sm:rounded-xl font-medium shadow-md hover:shadow-lg hover:bg-emerald-600 transition-all duration-200 px-3 py-2 sm:px-4 sm:py-2 text-xs sm:text-sm flex items-center justify-center gap-1 sm:gap-2 whitespace-nowrap"
+                className="bg-emerald-500 text-white rounded-lg sm:rounded-xl font-medium shadow-md hover:shadow-lg hover:bg-emerald-600 transition-all duration-200 px-3 py-2 sm:px-4 text-xs sm:text-sm whitespace-nowrap"
               >
-                <span className="hidden xs:inline">Sign Up</span>
-                <span className="xs:hidden">Sign Up</span>
+                Sign Up
               </button>
               <button
                 onClick={() => navigate('/login')}
-                className={`px-3 py-2 sm:px-4 sm:py-2 rounded-lg sm:rounded-xl font-medium border transition-all duration-200 text-xs sm:text-sm whitespace-nowrap ${
-                  isDark 
-                    ? 'border-gray-600 text-gray-300 bg-slate-800 hover:bg-slate-700 hover:shadow-md' 
-                    : 'border-gray-300 text-gray-700 bg-white hover:bg-gray-50 hover:shadow-md'
-                }`}
+                className={`px-3 py-2 sm:px-4 rounded-lg sm:rounded-xl font-medium border transition-all duration-200 text-xs sm:text-sm whitespace-nowrap ${isDark ? 'border-gray-600 text-gray-300 bg-slate-800 hover:bg-slate-700' : 'border-gray-300 text-gray-700 bg-white hover:bg-gray-50'}`}
               >
                 Sign In
               </button>
@@ -495,15 +404,16 @@ export default function Welcome() {
         </div>
       </nav>
 
-      {/* Hero Section */}
-      <section className={`relative z-10 px-4 sm:px-6 lg:px-8 py-10 sm:py-16 lg:py-20 transition-all duration-1000 ${isVisible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-10'}`}>
+      {/* ── Hero Section ── */}
+      {/* pt-6 prevents content sitting directly under the sticky nav */}
+      <section className={`relative z-10 px-4 sm:px-6 lg:px-8 pt-10 pb-10 sm:pt-14 sm:pb-16 lg:pt-20 lg:pb-20 transition-all duration-1000 ${isVisible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-10'}`}>
         <div className="max-w-7xl mx-auto">
           <div className="flex justify-center items-center">
-            <div className="space-y-6 sm:space-y-8 lg:space-y-10 text-center max-w-4xl">
+            <div className="space-y-6 sm:space-y-8 lg:space-y-10 text-center max-w-4xl w-full">
               <div className="space-y-4 sm:space-y-6">
                 <h1 className={`text-3xl sm:text-4xl md:text-5xl lg:text-6xl xl:text-7xl font-black leading-tight ${styles.text.primary}`}>
                   <span className="block bg-gradient-to-r from-emerald-600 via-teal-600 to-green-700 bg-clip-text text-transparent">
-                    ECOSORT
+                    Ecosort
                   </span>
                   <span className="block mt-1 sm:mt-2 text-2xl sm:text-3xl md:text-4xl lg:text-5xl">
                     Smart Waste Management
@@ -511,42 +421,41 @@ export default function Welcome() {
                 </h1>
                 <p className={`text-sm sm:text-base lg:text-lg xl:text-xl leading-relaxed max-w-2xl mx-auto ${styles.text.secondary}`}>
                   Transforming communities.
-                  <span className="font-semibold text-emerald-700"> Recycle for rewards</span>, 
-                  <span className="font-semibold text-red-600"> report issues</span>, and 
-                  <span className="font-semibold text-blue-600"> connect with your community for a cleaner, sustainable future.</span> 
+                  <span className="font-semibold text-emerald-700"> Recycle for rewards</span>,{' '}
+                  <span className="font-semibold text-red-600">report issues</span>, and{' '}
+                  <span className="font-semibold text-blue-600">connect with your community</span> for a cleaner, sustainable future.
                 </p>
               </div>
-              
-              {/* NEW SMART INSTALL BUTTON - Allows popup */}
+
+              {/* Install PWA — auto-popup ENABLED here (single instance on the page) */}
               <InstallPWA />
             </div>
           </div>
         </div>
       </section>
 
-      {/* Features Section */}
-      <section className={`relative z-10 py-12 sm:py-16 lg:py-24 backdrop-blur-sm ${
-        isDark ? 'bg-slate-800/20' : 'bg-gradient-to-br from-white/80 via-emerald-50/60 to-teal-50/40'
-      }`} data-section="features">
+      {/* ── Features Section ── */}
+      <section
+        className={`relative z-10 py-12 sm:py-16 lg:py-24 backdrop-blur-sm ${isDark ? 'bg-slate-800/20' : 'bg-gradient-to-br from-white/80 via-emerald-50/60 to-teal-50/40'}`}
+        data-section="features"
+      >
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          {/* Section heading */}
           <div className="text-center mb-8 sm:mb-12 lg:mb-20">
-            <div className={`inline-flex items-center gap-2 rounded-full px-4 sm:px-6 py-2 sm:py-3 font-medium shadow-lg mb-4 sm:mb-6 lg:mb-8 backdrop-blur-xl text-xs sm:text-sm ${
-              isDark 
-                ? 'bg-slate-800/70 border border-emerald-500/30 text-emerald-300' 
-                : 'bg-white/70 border border-emerald-200/30 text-emerald-800'
-            }`}>
+            <div className={`inline-flex items-center gap-2 rounded-full px-4 sm:px-6 py-2 sm:py-3 font-medium shadow-lg mb-4 sm:mb-6 lg:mb-8 backdrop-blur-xl text-xs sm:text-sm ${isDark ? 'bg-slate-800/70 border border-emerald-500/30 text-emerald-300' : 'bg-white/70 border border-emerald-200/30 text-emerald-800'}`}>
               <SparkleIcon className="w-3 h-3 sm:w-4 sm:h-4" />
               <span>Platform Features</span>
               <SparkleIcon className="w-3 h-3 sm:w-4 sm:h-4" />
             </div>
             <h2 className={`text-2xl sm:text-3xl lg:text-4xl xl:text-5xl font-black mb-3 sm:mb-4 lg:mb-6 ${styles.text.primary}`}>
-               Why Use Ecosort?
+              Why Use Ecosort?
             </h2>
             <p className={`text-sm sm:text-base lg:text-lg xl:text-xl max-w-3xl mx-auto leading-relaxed px-4 ${styles.text.secondary}`}>
-              ECOSORT combines recycling rewards, community reporting, and social engagement to create sustainable waste management in your neighborhood.
+              Ecosort combines recycling rewards, community reporting, and social engagement to create sustainable waste management in your neighborhood.
             </p>
           </div>
 
+          {/* Feature cards */}
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6 lg:gap-8">
             {features.map((feature, index) => {
               const IconComponent = feature.icon;
@@ -558,7 +467,7 @@ export default function Welcome() {
                   className={`group relative overflow-hidden rounded-xl sm:rounded-2xl lg:rounded-3xl transition-all duration-700 transform px-4 sm:px-6 py-6 sm:py-8 lg:py-10 ${
                     isActive
                       ? `${isDark ? 'bg-slate-800/90 border-2 border-emerald-400/50' : 'bg-white/90 border-2 border-emerald-200/50'} shadow-2xl scale-105`
-                      : `${isDark ? 'bg-slate-800/70 border border-slate-600/30' : 'bg-white/70 border border-white/20'} shadow-xl hover:shadow-2xl hover:scale-102`
+                      : `${isDark ? 'bg-slate-800/70 border border-slate-600/30' : 'bg-white/70 border border-white/20'} shadow-xl hover:shadow-2xl hover:scale-[1.02]`
                   }`}
                 >
                   <div className={`absolute inset-0 bg-gradient-to-br ${feature.gradient} opacity-5 group-hover:opacity-10 transition-opacity duration-500`}></div>
@@ -573,9 +482,7 @@ export default function Welcome() {
                       <p className={`text-xs sm:text-sm lg:text-base leading-relaxed px-2 ${styles.text.secondary}`}>{feature.description}</p>
                     </div>
 
-                    <div className={`absolute -top-1 -right-1 sm:-top-2 sm:-right-2 w-5 h-5 sm:w-6 sm:h-6 lg:w-8 lg:h-8 rounded-full flex items-center justify-center text-xs font-bold text-white transition-all duration-300 shadow-lg ${
-                      isActive ? `bg-gradient-to-r ${feature.gradient} scale-110` : 'bg-gray-400'
-                    }`}>
+                    <div className={`absolute -top-1 -right-1 sm:-top-2 sm:-right-2 w-5 h-5 sm:w-6 sm:h-6 lg:w-8 lg:h-8 rounded-full flex items-center justify-center text-xs font-bold text-white transition-all duration-300 shadow-lg ${isActive ? `bg-gradient-to-r ${feature.gradient} scale-110` : 'bg-gray-400'}`}>
                       {index + 1}
                     </div>
                   </div>
@@ -584,12 +491,8 @@ export default function Welcome() {
             })}
           </div>
 
-          {/* Help & Support Banner */}
-          <div className={`mt-8 sm:mt-12 rounded-2xl sm:rounded-3xl p-5 sm:p-8 flex flex-col sm:flex-row items-center justify-between gap-4 sm:gap-6 ${
-            isDark
-              ? 'bg-slate-800/70 border border-slate-600/30'
-              : 'bg-white/70 border border-gray-200/50'
-          } shadow-lg`}>
+          {/* Help & Support banner */}
+          <div className={`mt-8 sm:mt-12 rounded-2xl sm:rounded-3xl p-5 sm:p-8 flex flex-col sm:flex-row items-center justify-between gap-4 sm:gap-6 ${isDark ? 'bg-slate-800/70 border border-slate-600/30' : 'bg-white/70 border border-gray-200/50'} shadow-lg`}>
             <div className="flex items-center gap-4 text-center sm:text-left">
               <div className="w-12 h-12 sm:w-14 sm:h-14 bg-gradient-to-br from-emerald-500 to-teal-600 rounded-xl sm:rounded-2xl flex items-center justify-center shadow-md flex-shrink-0">
                 <svg className="w-6 h-6 sm:w-7 sm:h-7 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -598,9 +501,7 @@ export default function Welcome() {
               </div>
               <div>
                 <h3 className={`text-base sm:text-lg font-bold ${styles.text.primary}`}>Need Help?</h3>
-                <p className={`text-xs sm:text-sm ${styles.text.secondary}`}>
-                  Browse FAQs, check known issues, or contact our support team.
-                </p>
+                <p className={`text-xs sm:text-sm ${styles.text.secondary}`}>Browse FAQs, check known issues, or contact our support team.</p>
               </div>
             </div>
             <button
@@ -610,28 +511,17 @@ export default function Welcome() {
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
-              Help & Support
+              Help &amp; Support
             </button>
           </div>
-
         </div>
       </section>
 
-     
-
-      {/* CTA Section */}
-      <section className={`relative z-10 py-12 sm:py-16 lg:py-24 overflow-hidden ${
-        isDark 
-          ? 'bg-gradient-to-br from-slate-800 via-gray-800 to-emerald-800' 
-          : 'bg-gradient-to-br from-emerald-600 via-teal-600 to-green-700'
-      }`}>
+      {/* ── CTA Section ── */}
+      <section className={`relative z-10 py-12 sm:py-16 lg:py-24 overflow-hidden ${isDark ? 'bg-gradient-to-br from-slate-800 via-gray-800 to-emerald-800' : 'bg-gradient-to-br from-emerald-600 via-teal-600 to-green-700'}`}>
         <div className="absolute inset-0">
-          <div className={`absolute top-20 left-20 w-32 h-32 sm:w-64 sm:h-64 rounded-full blur-3xl animate-pulse ${
-            isDark ? 'bg-emerald-400/10' : 'bg-white/5'
-          }`}></div>
-          <div className={`absolute bottom-20 right-20 w-48 h-48 sm:w-96 sm:h-96 rounded-full blur-3xl animate-pulse delay-1000 ${
-            isDark ? 'bg-teal-400/5' : 'bg-white/3'
-          }`}></div>
+          <div className={`absolute top-20 left-20 w-32 h-32 sm:w-64 sm:h-64 rounded-full blur-3xl animate-pulse ${isDark ? 'bg-emerald-400/10' : 'bg-white/5'}`}></div>
+          <div className={`absolute bottom-20 right-20 w-48 h-48 sm:w-96 sm:h-96 rounded-full blur-3xl animate-pulse delay-1000 ${isDark ? 'bg-teal-400/5' : 'bg-white/3'}`}></div>
         </div>
 
         <div className="relative max-w-6xl mx-auto text-center px-4 sm:px-6 lg:px-8">
@@ -640,64 +530,47 @@ export default function Welcome() {
               <div className="text-3xl sm:text-4xl lg:text-5xl xl:text-6xl animate-bounce">🌍</div>
               <h2 className="text-2xl sm:text-3xl lg:text-4xl xl:text-5xl font-black text-white leading-tight">
                 Ready to Transform
-                <span className={`block bg-gradient-to-r bg-clip-text text-transparent ${
-                  isDark 
-                    ? 'from-emerald-300 via-teal-300 to-green-300' 
-                    : 'from-yellow-300 via-amber-300 to-orange-300'
-                }`}>
+                <span className={`block bg-gradient-to-r bg-clip-text text-transparent ${isDark ? 'from-emerald-300 via-teal-300 to-green-300' : 'from-yellow-300 via-amber-300 to-orange-300'}`}>
                   Your Community?
                 </span>
               </h2>
-              <p className={`text-sm sm:text-base lg:text-lg xl:text-xl max-w-3xl mx-auto leading-relaxed ${
-                isDark ? 'text-gray-200' : 'text-emerald-100'
-              }`}>
-                Join ECOSORT today and start making meaningful impact in your community's waste management. Every action counts toward a cleaner, sustainable future.
+              <p className={`text-sm sm:text-base lg:text-lg xl:text-xl max-w-3xl mx-auto leading-relaxed ${isDark ? 'text-gray-200' : 'text-emerald-100'}`}>
+                Join Ecosort today and start making meaningful impact in your community's waste management. Every action counts toward a cleaner, sustainable future.
               </p>
             </div>
 
             <div className="flex flex-col sm:flex-row gap-3 sm:gap-4 max-w-lg mx-auto">
               <button
                 onClick={() => navigate('/signup')}
-                className={`group px-6 py-3 sm:px-8 sm:py-4 rounded-lg font-bold text-sm sm:text-base transition-all duration-200 transform hover:-translate-y-1 shadow-lg flex-1 ${
-                  isDark 
-                    ? 'bg-emerald-500 text-white hover:bg-emerald-400' 
-                    : 'bg-white text-emerald-600 hover:bg-emerald-50'
-                }`}
+                className={`group px-6 py-3 sm:px-8 sm:py-4 rounded-lg font-bold text-sm sm:text-base transition-all duration-200 transform hover:-translate-y-1 shadow-lg flex-1 ${isDark ? 'bg-emerald-500 text-white hover:bg-emerald-400' : 'bg-white text-emerald-600 hover:bg-emerald-50'}`}
               >
                 Start Your Journey
               </button>
             </div>
-
-            {/* Install PWA Component for all Operating Systems - Auto-popup disabled */}
-            <InstallPWA disableAutoPopup={true} />
           </div>
         </div>
       </section>
 
-      {/* Footer */}
-      <footer className={`relative z-10 py-8 sm:py-12 lg:py-16 ${
-        isDark 
-          ? 'bg-gradient-to-br from-slate-900 via-gray-900 to-slate-800 text-white' 
-          : 'bg-gradient-to-br from-slate-900 via-gray-900 to-emerald-900 text-white'
-      }`}>
+      {/* ── Footer ── */}
+      <footer className={`relative z-10 py-8 sm:py-12 lg:py-16 ${isDark ? 'bg-gradient-to-br from-slate-900 via-gray-900 to-slate-800 text-white' : 'bg-gradient-to-br from-slate-900 via-gray-900 to-emerald-900 text-white'}`}>
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 sm:gap-8 lg:gap-10">
+            {/* Brand */}
             <div className="space-y-3 sm:space-y-4 lg:space-y-6 sm:col-span-2 lg:col-span-1">
               <div className="flex items-center gap-2 sm:gap-3 lg:gap-4">
                 <div className="w-8 h-8 sm:w-10 sm:h-10 lg:w-12 lg:h-12 bg-gradient-to-br from-emerald-500 to-teal-600 rounded-lg sm:rounded-xl lg:rounded-2xl flex items-center justify-center text-white font-bold text-sm sm:text-lg lg:text-xl">
                   E
                 </div>
-                <div>
-                  <span className="text-lg sm:text-xl lg:text-2xl font-black bg-gradient-to-r from-emerald-400 to-teal-400 bg-clip-text text-transparent">
-                    ECOSORT
-                  </span>
-                </div>
+                <span className="text-lg sm:text-xl lg:text-2xl font-black bg-gradient-to-r from-emerald-400 to-teal-400 bg-clip-text text-transparent">
+                  Ecosort
+                </span>
               </div>
               <p className="text-xs sm:text-sm lg:text-base text-gray-300 leading-relaxed">
-                Transforming communities through sustainable waste management solutions. Recycle for rewards, report violations, and connect with your community for a cleaner, sustainable future.
+                Transforming communities through sustainable waste management. Recycle for rewards, report violations, and connect with your community for a cleaner future.
               </p>
             </div>
 
+            {/* Features list */}
             <div>
               <h4 className="font-bold mb-3 sm:mb-4 lg:mb-6 text-emerald-400 text-sm sm:text-base lg:text-lg">Platform Features</h4>
               <ul className="space-y-2 sm:space-y-3 text-gray-300 text-xs sm:text-sm lg:text-base">
@@ -716,6 +589,7 @@ export default function Welcome() {
               </ul>
             </div>
 
+            {/* Contact */}
             <div>
               <h4 className="font-bold mb-3 sm:mb-4 lg:mb-6 text-emerald-400 text-sm sm:text-base lg:text-lg">Contact Info</h4>
               <div className="space-y-2 sm:space-y-3 lg:space-y-4 text-gray-300 text-xs sm:text-sm lg:text-base">
@@ -733,7 +607,7 @@ export default function Welcome() {
                     onClick={() => navigate('/support')}
                     className="text-teal-400 hover:text-teal-300 underline underline-offset-2 transition-colors text-xs sm:text-sm font-medium"
                   >
-                    Help & Support
+                    Help &amp; Support
                   </button>
                 </div>
               </div>
@@ -741,130 +615,44 @@ export default function Welcome() {
           </div>
 
           <div className="border-t border-gray-700 mt-6 sm:mt-8 lg:mt-12 pt-4 sm:pt-6 lg:pt-8 text-center">
-            <div className="flex flex-col gap-3 sm:gap-4">
-              <span className="text-gray-400 text-[10px] sm:text-xs lg:text-sm">
-                &copy; 2025 ECOSORT. All rights reserved.
-              </span>
-            </div>
+            <span className="text-gray-400 text-[10px] sm:text-xs lg:text-sm">
+              &copy; 2025 Ecosort. All rights reserved.
+            </span>
           </div>
         </div>
       </footer>
 
-      {/* Custom Styles */}
+      {/* ── Styles ── */}
       <style>{`
         @keyframes float {
-          0%, 100% {
-            transform: translateY(0px) rotate(0deg);
-          }
-          50% {
-            transform: translateY(-20px) rotate(3deg);
-          }
+          0%, 100% { transform: translateY(0px) rotate(0deg); }
+          50% { transform: translateY(-20px) rotate(3deg); }
         }
-
         @keyframes bounce {
-          0%, 100% {
-            transform: translateY(0px) scale(1);
-          }
-          50% {
-            transform: translateY(-15px) scale(1.05);
-          }
+          0%, 100% { transform: translateY(0px) scale(1); }
+          50% { transform: translateY(-15px) scale(1.05); }
         }
-        
         @keyframes fade-in {
           from { opacity: 0; }
           to { opacity: 1; }
         }
-
         @keyframes slideUp {
-          from {
-            opacity: 0;
-            transform: translateY(20px);
-          }
-          to {
-            opacity: 1;
-            transform: translateY(0);
-          }
+          from { opacity: 0; transform: translateY(20px); }
+          to { opacity: 1; transform: translateY(0); }
         }
+        .animate-float   { animation: float 6s ease-in-out infinite; }
+        .animate-bounce  { animation: bounce 3s ease-in-out infinite; }
+        .animate-fade-in { animation: fade-in 0.3s ease-out forwards; }
+        .animate-slideUp { animation: slideUp 0.3s ease-out forwards; }
 
-        .animate-float {
-          animation: float 6s ease-in-out infinite;
-        }
+        html { scroll-behavior: smooth; }
 
-        .animate-bounce {
-          animation: bounce 3s ease-in-out infinite;
-        }
-
-        .animate-fade-in {
-          animation: fade-in 0.3s ease-out forwards;
-        }
-
-        .animate-slideUp {
-          animation: slideUp 0.3s ease-out forwards;
-        }
-
-        .hover\\:scale-102:hover {
-          transform: scale(1.02);
-        }
-
-        /* Responsive breakpoints */
-        @media (min-width: 475px) {
-          .xs\\:inline {
-            display: inline;
-          }
-          .xs\\:hidden {
-            display: none;
-          }
-        }
-
-        /* Smooth scrolling */
-        html {
-          scroll-behavior: smooth;
-        }
-
-        /* Custom scrollbar */
-        ::-webkit-scrollbar {
-          width: 4px;
-        }
-
-        @media (min-width: 640px) {
-          ::-webkit-scrollbar {
-            width: 6px;
-          }
-        }
-
-        ::-webkit-scrollbar-track {
-          background: rgba(241, 245, 249, 0.5);
-        }
-
-        ::-webkit-scrollbar-thumb {
-          background: linear-gradient(to bottom, #10b981, #0d9488);
-          border-radius: 8px;
-        }
-
-        ::-webkit-scrollbar-thumb:hover {
-          background: linear-gradient(to bottom, #059669, #0f766e);
-        }
-
-        /* Selection styling */
-        ::selection {
-          background: rgba(16, 185, 129, 0.2);
-          color: #065f46;
-        }
-
-        /* Mobile-first responsive utilities */
-        @media (max-width: 374px) {
-          .text-xs {
-            font-size: 0.7rem;
-          }
-          .px-3 {
-            padding-left: 0.5rem;
-            padding-right: 0.5rem;
-          }
-          .py-2 {
-            padding-top: 0.375rem;
-            padding-bottom: 0.375rem;
-          }
-        }
+        ::-webkit-scrollbar { width: 4px; }
+        @media (min-width: 640px) { ::-webkit-scrollbar { width: 6px; } }
+        ::-webkit-scrollbar-track { background: rgba(241,245,249,0.5); }
+        ::-webkit-scrollbar-thumb { background: linear-gradient(to bottom,#10b981,#0d9488); border-radius: 8px; }
+        ::-webkit-scrollbar-thumb:hover { background: linear-gradient(to bottom,#059669,#0f766e); }
+        ::selection { background: rgba(16,185,129,0.2); color: #065f46; }
       `}</style>
     </div>
   );

@@ -379,10 +379,12 @@ const SubmissionsTab = ({
         ? `Your waste submission has been rejected. Reason: ${reason}`
         : "Your waste submission has been rejected. Please review the guidelines and try again.";
 
+      // Use "submission_rejected" type so useUserNotifications renders the
+      // correct ❌ toast instead of the generic info toast.
       await addNotification(
         userId,
         message,
-        "submission_status",
+        "submission_rejected",
         {
           title: "Submission Rejected",
           status: "rejected",
@@ -402,7 +404,9 @@ const SubmissionsTab = ({
         ...(reason ? { rejectionReason: reason } : {}),
       });
 
-      // ⛓️ Record the admin rejection on the immutable ledger
+      // ⛓️ Rejection carries 0 points — no user balance changes so the tamper
+      // watcher will not fire. Write order doesn't matter here but keep it last
+      // for consistency with confirmSubmission.
       await addToLedger(
         userId,
         "SUBMISSION_REJECTED",
@@ -433,11 +437,7 @@ const SubmissionsTab = ({
         awardedPoints = Number(submission.weight * pointsPerKiloForType) || 0;
       }
 
-      const userRef = doc(db, "users", submission.userId);
-
-      // Capture the returned point_transaction doc ID so we can seal it into
-      // the blockchain block as firestoreId. The tamper checker will then
-      // cross-verify the live doc points against metadata.txPoints on every run.
+      // 1. Create the point_transaction record first so we have its ID for the ledger seal.
       const pointTxId = await createPointTransaction({
         userId: submission.userId,
         points: awardedPoints,
@@ -445,32 +445,12 @@ const SubmissionsTab = ({
         type: "points_awarded",
       });
 
-      await runTransaction(db, async (transaction) => {
-        const userSnap = await transaction.get(userRef);
-        if (!userSnap.exists()) throw new Error("User does not exist");
-        const currentPoints = Number(userSnap.data().totalPoints) || 0;
-        const updatedPoints = currentPoints + awardedPoints;
-        if (updatedPoints < 0) throw new Error("User points cannot be negative");
-        transaction.update(userRef, { totalPoints: updatedPoints });
-      });
-
-      const submissionRef = doc(db, "waste_submissions", submission.id);
-      await updateDoc(submissionRef, {
-        status: "confirmed",
-        points: awardedPoints,
-        confirmedAt: serverTimestamp(),
-      });
-
-      await addNotification(
-        submission.userId,
-        `Your ${isMixedBundle ? 'mixed bundle' : 'waste'} submission has been confirmed! You earned ${awardedPoints.toFixed(2)} points.`
-      );
-
-      // ⛓️ Record the points award on the immutable ledger.
-      // firestoreId is the point_transaction doc just created above — the tamper
-      // checker verifies its live .points against the sealed metadata.txPoints.
-      // Guard: if createPointTransaction failed (null), omit firestoreId entirely
-      // so the checker skips this block rather than raising a false deleted alert.
+      // 2. Write the ledger block BEFORE updating totalPoints.
+      //    The tamper watcher's onSnapshot fires when totalPoints changes. If the
+      //    ledger block doesn't exist yet at that moment the watcher sees a
+      //    mismatch and fires a false "points changed without a transaction" alert.
+      //    Writing the block first guarantees the ledger is already consistent
+      //    when the user-doc snapshot arrives.
       await addToLedger(
         submission.userId,
         "SUBMISSION_CONFIRMED",
@@ -483,6 +463,32 @@ const SubmissionsTab = ({
             ? (submission.totalWeight ?? submission.items?.reduce((s, i) => s + (i.weight || 0), 0) ?? null)
             : (submission.weight ?? null),
         }
+      );
+
+      // 3. Now update totalPoints — ledger block already committed above.
+      const userRef = doc(db, "users", submission.userId);
+      await runTransaction(db, async (transaction) => {
+        const userSnap = await transaction.get(userRef);
+        if (!userSnap.exists()) throw new Error("User does not exist");
+        const currentPoints = Number(userSnap.data().totalPoints) || 0;
+        const updatedPoints = currentPoints + awardedPoints;
+        if (updatedPoints < 0) throw new Error("User points cannot be negative");
+        transaction.update(userRef, { totalPoints: updatedPoints });
+      });
+
+      // 4. Mark the submission confirmed and send notification.
+      const submissionRef = doc(db, "waste_submissions", submission.id);
+      await updateDoc(submissionRef, {
+        status: "confirmed",
+        points: awardedPoints,
+        confirmedAt: serverTimestamp(),
+      });
+
+      await addNotification(
+        submission.userId,
+        `Your ${isMixedBundle ? 'mixed bundle' : 'waste'} submission has been confirmed! You earned ${awardedPoints.toFixed(2)} points.`,
+        "submission_approved",
+        { title: "Submission Confirmed ✅", status: "confirmed" }
       );
 
       setPendingSubmissions((prev) => prev.filter((sub) => sub.id !== submission.id));

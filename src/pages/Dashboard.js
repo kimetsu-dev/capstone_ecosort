@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
-import { FiUser, FiMenu, FiX, FiLogOut, FiChevronLeft, FiBell } from "react-icons/fi";
+import { FiUser, FiMenu, FiX, FiLogOut, FiChevronLeft, FiBell, FiMessageSquare } from "react-icons/fi";
 import { useTheme } from "../contexts/ThemeContext";
 import { DashboardCalendar, InlineCalendar } from "../components/DashboardCalendar";
 import NotificationCenter from "../components/NotificationCenter";
@@ -30,7 +30,6 @@ import { pushTab, setDefaultTab, TAB_BACK_EVENT } from "../BackButtonHandler";
 import {
   FaRecycle,
   FaGift,
-  FaExclamationTriangle,
   FaTrophy,
   FaFileAlt,
   FaHome,
@@ -54,7 +53,7 @@ const WEB_MENU_ITEMS = [
   { id: "overview", title: "Dashboard", icon: FaHome, color: "from-blue-500 to-indigo-600", bgColor: "bg-blue-500" },
   { id: "submit", title: "Submit", icon: FaRecycle, color: "from-emerald-500 to-teal-600", bgColor: "bg-emerald-500" },
   { id: "rewards", title: "Rewards", icon: FaGift, color: "from-amber-500 to-orange-600", bgColor: "bg-amber-500" },
-  { id: "report", title: "Forum", icon: FaExclamationTriangle, color: "from-red-500 to-rose-600", bgColor: "bg-red-500" },
+  { id: "report", title: "Forum", icon: FiMessageSquare, color: "from-sky-500 to-blue-600", bgColor: "bg-sky-500" },
   { id: "leaderboard", title: "Leaderboard", icon: FaTrophy, color: "from-purple-500 to-pink-600", bgColor: "bg-purple-500" },
   { id: "transactions", title: "Transactions", icon: FaFileAlt, color: "from-slate-500 to-gray-600", bgColor: "bg-slate-500" },
 ];
@@ -64,7 +63,7 @@ const APP_MENU_ITEMS = [
   { id: "overview", title: "Dashboard", icon: FaHome, color: "from-blue-500 to-indigo-600", bgColor: "bg-blue-500" },
   { id: "submit", title: "Submit", icon: FaRecycle, color: "from-emerald-500 to-teal-600", bgColor: "bg-emerald-500" },
   { id: "rewards", title: "Rewards", icon: FaGift, color: "from-amber-500 to-orange-600", bgColor: "bg-amber-500" },
-  { id: "report", title: "Forum", icon: FaExclamationTriangle, color: "from-red-500 to-rose-600", bgColor: "bg-red-500" },
+  { id: "report", title: "Forum", icon: FiMessageSquare, color: "from-sky-500 to-blue-600", bgColor: "bg-sky-500" },
   { id: "transactions", title: "Transactions", icon: FaFileAlt, color: "from-slate-500 to-gray-600", bgColor: "bg-slate-500" },
 ];
 
@@ -1425,7 +1424,7 @@ export default function Dashboard() {
                     {[
                       { label: "Submit Waste",    id: "submit",       icon: <FaRecycle />,      color: "from-emerald-500 to-teal-500" },
                       { label: "Browse Rewards",  id: "rewards",      icon: <FaGift />,         color: "from-amber-500 to-orange-500" },
-                      { label: "Forum",           id: "report",       icon: <FaExclamationTriangle />, color: "from-red-500 to-rose-500" },
+                      { label: "Forum",           id: "report",       icon: <FiMessageSquare />, color: "from-sky-500 to-blue-500" },
                       { label: "Leaderboard",     id: "leaderboard",  icon: <FaTrophy />,       color: "from-purple-500 to-pink-500" },
                       { label: "Transactions",    id: "transactions", icon: <FaFileAlt />,      color: "from-slate-500 to-gray-500" },
                     ].map(({ label, id, icon, color }) => (

@@ -275,6 +275,8 @@ const RedemptionsTab = ({
         console.error("⚠️ Warning: Failed to create claimed transaction record:", txError);
       }
 
+      // No points change here so write order vs updateRedemptionStatus doesn't
+      // affect the tamper watcher. Keep ledger write before notification for consistency.
       await addToLedger(
         redemption.userId,
         "REDEMPTION_CLAIMED",
@@ -287,10 +289,12 @@ const RedemptionsTab = ({
         }
       );
 
+      // Use "redemption_confirmed" type so useUserNotifications renders the
+      // correct 🎁 success toast.
       await addNotification(
         redemption.userId,
         `Your redemption for "${redemption.rewardName || "reward"}" has been approved and claimed successfully.`,
-        "redemption_status",
+        "redemption_confirmed",
         {
           title: "Redemption Claimed ✅",
           status: "success",
@@ -311,7 +315,48 @@ const RedemptionsTab = ({
       const refundPoints = redemption.totalCost ?? redemption.cost ?? redemption.pointCost ?? 0;
       const restoreQty = redemption.quantity ?? 1;
 
-      // 1. Atomically update redemption status, refund user points, restore stock
+      // 1. Create point_transaction record first so we have its ID for the ledger seal.
+      let rejectedPtId = null;
+      try {
+        const ptRef = await addDoc(collection(db, "point_transactions"), {
+          userId: redemption.userId,
+          type: "points_refunded",
+          points: refundPoints, // positive so it shows as a credit
+          description: `Reward Rejected – "${redemption.rewardName || "reward"}"`,
+          refundNote: "Points Refunded",
+          rewardName: redemption.rewardName ?? null,
+          rewardId: redemption.rewardId ?? null,
+          redemptionId: redemption.id,
+          category: "refund",
+          timestamp: serverTimestamp(),
+          ...(reason ? { rejectionReason: reason } : {}),
+        });
+        rejectedPtId = ptRef.id;
+      } catch (txError) {
+        console.error("⚠️ Warning: Failed to create refund transaction record:", txError);
+      }
+
+      // 2. Write the ledger block BEFORE the runTransaction that updates totalPoints.
+      //    The tamper watcher fires when totalPoints changes. Writing the block first
+      //    guarantees the ledger already has the matching REDEMPTION_CANCELLED entry
+      //    (which is what the watcher's BALANCE_ACTION_TYPES set counts toward the
+      //    ledger sum) before the snapshot arrives.
+      await addToLedger(
+        redemption.userId,
+        "REDEMPTION_CANCELLED",   // ← matches BALANCE_ACTION_TYPES in the watcher
+        refundPoints,             // positive = refund credit
+        {
+          redemptionId: redemption.id,
+          rewardId: redemption.rewardId ?? null,
+          rewardName: redemption.rewardName ?? null,
+          refundedPoints: refundPoints,
+          ...(reason ? { reason } : {}),
+          ...(rejectedPtId ? { firestoreId: rejectedPtId } : {}),
+        }
+      );
+
+      // 3. Atomically update redemption status, refund user points, restore stock.
+      //    totalPoints changes here — the ledger block is already committed above.
       await runTransaction(db, async (transaction) => {
         const redemptionRef = doc(db, "redemptions", redemption.id);
         const userRef = doc(db, "users", redemption.userId);
@@ -349,43 +394,8 @@ const RedemptionsTab = ({
         }
       });
 
-      // 2. Create point_transaction FIRST so we can link its ID into the ledger block.
-      let rejectedPtId = null;
-      try {
-        const ptRef = await addDoc(collection(db, "point_transactions"), {
-          userId: redemption.userId,
-          type: "points_refunded",
-          points: refundPoints, // positive so it shows as a credit
-          description: `Reward Rejected – "${redemption.rewardName || "reward"}"`,
-          refundNote: "Points Refunded",
-          rewardName: redemption.rewardName ?? null,
-          rewardId: redemption.rewardId ?? null,
-          redemptionId: redemption.id,
-          category: "refund",
-          timestamp: serverTimestamp(),
-          ...(reason ? { rejectionReason: reason } : {}),
-        });
-        rejectedPtId = ptRef.id;
-      } catch (txError) {
-        console.error("⚠️ Warning: Failed to create refund transaction record:", txError);
-      }
-
-      // 3. Add refund entry to the blockchain ledger
-      await addToLedger(
-        redemption.userId,
-        "REDEMPTION_REJECTED",
-        refundPoints, // positive = refund
-        {
-          redemptionId: redemption.id,
-          rewardId: redemption.rewardId ?? null,
-          rewardName: redemption.rewardName ?? null,
-          refundedPoints: refundPoints,
-          ...(reason ? { reason } : {}),
-          ...(rejectedPtId ? { firestoreId: rejectedPtId } : {}),
-        }
-      );
-
-      // 4. Notify the user
+      // 4. Notify the user — use "redemption_rejected" type so the correct
+      //    toast style is applied in useUserNotifications.
       const message = reason
         ? `Your redemption for "${redemption.rewardName || "reward"}" was rejected. Reason: ${reason}. ${refundPoints > 0 ? `${refundPoints} points have been refunded to your account.` : ""}`
         : `Your redemption for "${redemption.rewardName || "reward"}" has been rejected. ${refundPoints > 0 ? `${refundPoints} points have been refunded to your account.` : ""}`;
@@ -393,7 +403,7 @@ const RedemptionsTab = ({
       await addNotification(
         redemption.userId,
         message,
-        "redemption_status",
+        "redemption_rejected",
         {
           title: "Redemption Rejected",
           status: "rejected",

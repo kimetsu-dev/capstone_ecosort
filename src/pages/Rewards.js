@@ -651,10 +651,52 @@ export default function Rewards() {
     const code = generateRedemptionCode();
 
     try {
-      // Single atomic transaction: deduct total cost + stock in one write,
-      // create one redemption doc with quantity field.
       const redemptionRef = doc(collection(db, "redemptions"));
 
+      // 1. Create point_transaction record FIRST so we have its ID for the ledger seal.
+      let pointTxId = null;
+      try {
+        const ptRef = await addDoc(collection(db, "point_transactions"), {
+          userId: currentUser.uid,
+          type: "points_redeemed",
+          points: -Math.abs(totalCost),
+          description: `Redeemed${quantity > 1 ? ` ${quantity}×` : ""}: ${reward.name}`,
+          rewardName: reward.name,
+          rewardId: reward.id,
+          redemptionIds: [redemptionRef.id],
+          quantity,
+          category: reward.category || "reward",
+          timestamp: serverTimestamp(),
+        });
+        pointTxId = ptRef.id;
+      } catch (txError) {
+        console.error("⚠️ Warning: Failed to create transaction record:", txError);
+      }
+
+      // 2. Write the ledger block BEFORE the runTransaction that deducts totalPoints.
+      //    The tamper watcher fires when totalPoints changes (inside runTransaction below).
+      //    Writing the block first guarantees the ledger already shows the deduction
+      //    when the user-doc snapshot arrives, so the watcher sees no mismatch.
+      try {
+        await addToLedger(
+          currentUser.uid,
+          "REWARD_REDEEMED",
+          -Math.abs(totalCost),
+          {
+            rewardId: reward.id,
+            rewardName: reward.name,
+            quantity,
+            redemptionCode: code,
+            redemptionIds: [redemptionRef.id],
+            ...(pointTxId ? { firestoreId: pointTxId } : {}),
+          }
+        );
+      } catch (ledgerError) {
+        console.error("⚠️ Ledger Error:", ledgerError);
+      }
+
+      // 3. Atomically deduct points, reduce stock, and create the redemption doc.
+      //    totalPoints changes here — the ledger block is already committed above.
       const result = await runTransaction(db, async (transaction) => {
         const userRef = doc(db, "users", currentUser.uid);
         const rewardRef = doc(db, "rewards", reward.id);
@@ -697,55 +739,9 @@ export default function Rewards() {
         };
       });
 
-      const newPoints = result.newPoints;
-      const newStock = result.newStock;
-      const redemptionIds = [result.redemptionId];
-
-      // Create point_transaction FIRST so we can link its Firestore ID into the
-      // ledger block — required for tamper-detection cross-referencing.
-      let pointTxId = null;
-      try {
-        const ptRef = await addDoc(collection(db, "point_transactions"), {
-          userId: currentUser.uid,
-          type: "points_redeemed",
-          points: -Math.abs(totalCost),
-          description: `Redeemed${quantity > 1 ? ` ${quantity}×` : ""}: ${reward.name}`,
-          rewardName: reward.name,
-          rewardId: reward.id,
-          redemptionIds,          // ← link to redemptions collection docs
-          quantity,
-          category: reward.category || "reward",
-          timestamp: serverTimestamp(),
-        });
-        pointTxId = ptRef.id;
-      } catch (txError) {
-        console.error("⚠️ Warning: Failed to create transaction record:", txError);
-      }
-
-      // Ledger entry — log total cost as a single ledger event.
-      // firestoreId (singular) links to the point_transaction doc above so the
-      // tamper-checker (verifyTransactionPointsTampering) can cross-reference it.
-      try {
-        await addToLedger(
-          currentUser.uid,
-          "REWARD_REDEEMED",
-          -Math.abs(totalCost),
-          {
-            rewardId: reward.id,
-            rewardName: reward.name,
-            quantity,
-            redemptionCode: code,
-            redemptionIds,
-            ...(pointTxId ? { firestoreId: pointTxId } : {}),
-          }
-        );
-      } catch (ledgerError) {
-        console.error("⚠️ Ledger Error:", ledgerError);
-      }
-
-      setUserPoints(newPoints);
+      setUserPoints(result.newPoints);
       setRewards((prev) =>
-        prev.map((r) => (r.id === reward.id ? { ...r, stock: newStock } : r))
+        prev.map((r) => (r.id === reward.id ? { ...r, stock: result.newStock } : r))
       );
       setRedeemedReward(reward);
       setRedemptionCode(code);

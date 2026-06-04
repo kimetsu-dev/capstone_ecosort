@@ -40,7 +40,7 @@ export default function TabsNavigation({
       label: "Reports",
       shortLabel: "Reports",
       mobileLabel: "Reports",
-      icon: "⚠️",
+      icon: "🗒️",
       count: reportsPendingCount,
       countColor: "bg-orange-500",
       countLabel: "pending reports",

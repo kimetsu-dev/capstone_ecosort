@@ -26,7 +26,6 @@ const FAQ_ITEMS = [
     q: "Why haven't my points updated after a submission?",
     a: "Points are credited once an admin reviews and approves your submission. Once confirmed on-site, your points are updated immediately and reflected in real time in your account.",
   },
-  
   {
     id: 4, category: "Submissions",
     q: "What happens after I submit waste?",
@@ -95,6 +94,7 @@ const KEYFRAMES = `
   @keyframes ecosort-spin { to { transform: rotate(360deg); } }
   @keyframes ecosort-pulse { 0%,100%{opacity:1}50%{opacity:.4} }
   @keyframes ecosort-fadein { from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none} }
+  @keyframes ecosort-slidedown { from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:none} }
 `;
 if (!document.getElementById("ecosort-support-kf")) {
   const s = document.createElement("style");
@@ -211,98 +211,176 @@ export default function Support() {
 
   return (
     <div style={{
-      maxWidth: 740, margin: "0 auto",
-      padding: "0 16px 80px", fontFamily: "'Segoe UI', system-ui, sans-serif",
+      minHeight: "100vh",
+      background: V.bg,
+      fontFamily: "'Segoe UI', system-ui, sans-serif",
     }}>
 
-      {/* ── Hero banner with back button ─────────────────────────────────── */}
+      {/* ── Fixed / sticky page header ──────────────────────────────────── */}
       <div style={{
-        position: "relative", overflow: "hidden",
-        borderRadius: "0 0 20px 20px", marginBottom: 22,
-        background: V.green, padding: "18px 20px 22px",
+        position: "sticky",
+        top: 0,
+        zIndex: 50,
+        background: V.green,
+        // Safe area support for notched phones
+        paddingTop: "env(safe-area-inset-top, 0px)",
+        boxShadow: "0 2px 16px rgba(22,101,52,0.18)",
       }}>
-        {/* Decorative gradient */}
+        {/* Decorative shimmer strip */}
         <div style={{
           position: "absolute", inset: 0, pointerEvents: "none",
-          background: "radial-gradient(ellipse at 85% 0%, #22c55e38 0%, transparent 65%)",
+          background: "radial-gradient(ellipse at 90% 20%, #22c55e30 0%, transparent 60%)",
         }} />
 
-        {/* Back button row */}
-        <div style={{ position: "relative", marginBottom: 14 }}>
+        {/* Inner header row */}
+        <div style={{
+          position: "relative",
+          maxWidth: 740,
+          margin: "0 auto",
+          padding: "14px 16px 16px",
+          display: "flex",
+          alignItems: "center",
+          gap: 14,
+        }}>
+          {/* Back button */}
           <button
             onClick={() => navigate(-1)}
+            aria-label="Go back"
             style={{
-              display: "inline-flex", alignItems: "center", gap: 6,
-              padding: "6px 12px", borderRadius: 8,
-              background: "rgba(255,255,255,0.15)", border: "1px solid rgba(255,255,255,0.25)",
-              color: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer",
-              backdropFilter: "blur(4px)", transition: "background .15s",
+              flexShrink: 0,
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 5,
+              width: 38,
+              height: 38,
+              borderRadius: 10,
+              background: "rgba(255,255,255,0.15)",
+              border: "1.5px solid rgba(255,255,255,0.28)",
+              color: "#fff",
+              fontSize: 17,
+              fontWeight: 700,
+              cursor: "pointer",
+              backdropFilter: "blur(6px)",
+              transition: "background .15s, transform .12s",
+              lineHeight: 1,
             }}
-            onMouseOver={(e) => e.currentTarget.style.background = "rgba(255,255,255,0.25)"}
-            onMouseOut={(e) => e.currentTarget.style.background = "rgba(255,255,255,0.15)"}
+            onMouseOver={(e) => {
+              e.currentTarget.style.background = "rgba(255,255,255,0.28)";
+              e.currentTarget.style.transform = "scale(1.07)";
+            }}
+            onMouseOut={(e) => {
+              e.currentTarget.style.background = "rgba(255,255,255,0.15)";
+              e.currentTarget.style.transform = "scale(1)";
+            }}
           >
-            ← Back
+            ←
           </button>
-        </div>
 
-        {/* Title row */}
-        <div style={{ position: "relative", display: "flex", alignItems: "center", gap: 14 }}>
-          <span style={{ fontSize: 38, lineHeight: 1, filter: "drop-shadow(0 2px 8px rgba(0,0,0,0.25))" }}>
-            🛠️
-          </span>
-          <div>
-            <h1 style={{ margin: 0, fontSize: 23, fontWeight: 900, color: "#fff", letterSpacing: "-0.02em" }}>
-              Help & Support
-            </h1>
-            <p style={{ margin: "4px 0 0", fontSize: 13, color: "#bbf7d0" }}>
-              Find answers, report issues, and track your support requests
-            </p>
+          {/* Title + subtitle */}
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <span style={{
+                fontSize: 24,
+                lineHeight: 1,
+                filter: "drop-shadow(0 2px 6px rgba(0,0,0,0.2))",
+              }}>🛠️</span>
+              <div>
+                <h1 style={{
+                  margin: 0,
+                  fontSize: 18,
+                  fontWeight: 900,
+                  color: "#fff",
+                  letterSpacing: "-0.02em",
+                  lineHeight: 1.2,
+                }}>
+                  Help & Support
+                </h1>
+                <p style={{
+                  margin: 0,
+                  fontSize: 12,
+                  color: "#bbf7d0",
+                  lineHeight: 1.3,
+                  marginTop: 1,
+                }}>
+                  Answers, issues & support tickets
+                </p>
+              </div>
+            </div>
           </div>
         </div>
       </div>
 
-      {/* ── Tab bar ──────────────────────────────────────────────────────── */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 8, marginBottom: 20 }}>
-        {TABS.map((t) => (
-          <button key={t.id} onClick={() => setTab(t.id)} style={{
-            display: "flex", flexDirection: "column", alignItems: "center", gap: 4,
-            padding: "10px 6px", borderRadius: 12, cursor: "pointer", fontSize: 12,
-            fontWeight: 700, border: `1.5px solid ${V.border}`, transition: "all .15s",
-            ...(tab === t.id
-              ? { background: V.green, borderColor: V.green, color: "#fff",
-                  boxShadow: "0 4px 14px rgba(22,101,52,.22)" }
-              : { background: V.surface, color: V.muted }),
-          }}>
-            <span style={{ fontSize: 18 }}>{t.icon}</span>
-            {t.label}
-          </button>
-        ))}
-      </div>
-
-      {/* ── Content card ─────────────────────────────────────────────────── */}
+      {/* ── Scrollable page body ─────────────────────────────────────────── */}
       <div style={{
-        background: V.surface, border: `1.5px solid ${V.border}`,
-        borderRadius: 16, padding: "26px 22px",
-        animation: "ecosort-fadein .2s ease",
+        maxWidth: 740,
+        margin: "0 auto",
+        padding: "20px 16px 80px",
+        // Safe area bottom padding for phones with home indicator
+        paddingBottom: "calc(80px + env(safe-area-inset-bottom, 0px))",
+        animation: "ecosort-slidedown .22s ease",
       }}>
-        {tab === "faq"    && <FAQTab />}
-        {tab === "issues" && <KnownIssuesTab />}
-        {tab === "submit" && (currentUser
-          ? <SubmitTab currentUser={currentUser} onSuccess={(id, ticketData) => {
-              setOptimisticTicket(ticketData ? { id, ...ticketData } : null);
-              setTab("tickets");
-            }} />
-          : <GuestWall action="submit a support ticket" />
-        )}
-        {tab === "tickets" && (currentUser
-          ? <MyTicketsTab
-              currentUser={currentUser}
-              onNew={() => setTab("submit")}
-              optimisticTicket={optimisticTicket}
-              onSynced={() => setOptimisticTicket(null)}
-            />
-          : <GuestWall action="view your tickets" />
-        )}
+
+        {/* ── Tab bar ────────────────────────────────────────────────────── */}
+        <div style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(4,1fr)",
+          gap: 8,
+          marginBottom: 20,
+        }}>
+          {TABS.map((t) => (
+            <button
+              key={t.id}
+              onClick={() => setTab(t.id)}
+              style={{
+                display: "flex", flexDirection: "column", alignItems: "center", gap: 4,
+                padding: "11px 6px", borderRadius: 12, cursor: "pointer", fontSize: 12,
+                fontWeight: 700, border: `1.5px solid ${V.border}`, transition: "all .15s",
+                ...(tab === t.id
+                  ? {
+                      background: V.green,
+                      borderColor: V.green,
+                      color: "#fff",
+                      boxShadow: "0 4px 14px rgba(22,101,52,.22)",
+                      transform: "translateY(-1px)",
+                    }
+                  : { background: V.surface, color: V.muted }),
+              }}
+            >
+              <span style={{ fontSize: 18 }}>{t.icon}</span>
+              {t.label}
+            </button>
+          ))}
+        </div>
+
+        {/* ── Content card ─────────────────────────────────────────────── */}
+        <div style={{
+          background: V.surface,
+          border: `1.5px solid ${V.border}`,
+          borderRadius: 16,
+          padding: "26px 20px",
+          boxShadow: "0 1px 8px rgba(0,0,0,0.05)",
+          animation: "ecosort-fadein .2s ease",
+        }}>
+          {tab === "faq"    && <FAQTab />}
+          {tab === "issues" && <KnownIssuesTab />}
+          {tab === "submit" && (currentUser
+            ? <SubmitTab currentUser={currentUser} onSuccess={(id, ticketData) => {
+                setOptimisticTicket(ticketData ? { id, ...ticketData } : null);
+                setTab("tickets");
+              }} />
+            : <GuestWall action="submit a support ticket" />
+          )}
+          {tab === "tickets" && (currentUser
+            ? <MyTicketsTab
+                currentUser={currentUser}
+                onNew={() => setTab("submit")}
+                optimisticTicket={optimisticTicket}
+                onSynced={() => setOptimisticTicket(null)}
+              />
+            : <GuestWall action="view your tickets" />
+          )}
+        </div>
       </div>
     </div>
   );
@@ -387,6 +465,7 @@ function FAQTab() {
                   padding: "14px 16px", fontSize: 14, color: V.muted,
                   lineHeight: 1.75, background: V.surface,
                   borderTop: `1px solid ${V.border}`,
+                  animation: "ecosort-fadein .15s ease",
                 }}>
                   {item.a}
                 </div>
@@ -408,8 +487,6 @@ function KnownIssuesTab() {
 
   useEffect(() => {
     let isMounted = true;
-    // Filter by visible client-side to avoid the composite index requirement
-    // (where("visible") + orderBy("createdAt") needs a Firestore index).
     const unsub = onSnapshot(
       collection(db, "knownIssues"),
       (snap) => {
@@ -547,8 +624,6 @@ function SubmitTab({ currentUser, onSuccess }) {
       setDone(true);
       setForm({ category: "", subject: "", message: "", priority: "medium" });
       setErrors({});
-      // Pass the new doc ID so MyTicketsTab can optimistically prepend it
-      // before the onSnapshot listener catches up with the server timestamp.
       setTimeout(() => {
         setDone(false);
         onSuccess(newDocRef.id, {
@@ -561,8 +636,6 @@ function SubmitTab({ currentUser, onSuccess }) {
           priority:      form.priority,
           status:        "open",
           adminResponse: "",
-          // Use a local timestamp so client-side sort places it at the top
-          // immediately; the real serverTimestamp will arrive with the listener.
           createdAt:     { toMillis: () => Date.now() },
           updatedAt:     { toMillis: () => Date.now() },
         });
@@ -697,26 +770,11 @@ function MyTicketsTab({ currentUser, onNew, optimisticTicket, onSynced }) {
   const [tickets, setTickets] = useState(
     optimisticTicket ? [optimisticTicket] : []
   );
-  const [loading, setLoading] = useState(!optimisticTicket); // skip spinner if we already have data
+  const [loading, setLoading] = useState(!optimisticTicket);
   const [expanded, setExp]    = useState(null);
   const [error, setError]     = useState(null);
-  // Track whether the first real Firestore snapshot has arrived
   const syncedRef = React.useRef(false);
 
-  /**
-   * Single-query strategy — no composite index required.
-   *
-   * We intentionally omit orderBy() from the Firestore query. Combining
-   * where("userId") with orderBy("createdAt") requires a composite index;
-   * if that index is missing or still building, onSnapshot throws
-   * "failed-precondition" and the catch block was leaving the list empty.
-   *
-   * Instead we filter by userId only, then sort the results client-side.
-   * This works with zero index configuration and is perfectly fast for the
-   * number of tickets a single user will ever have.
-   */
-  // Stable ref so the useEffect dependency array doesn't need onSynced,
-  // preventing the effect from re-running if the parent re-renders.
   const onSyncedRef = React.useRef(onSynced);
   React.useEffect(() => { onSyncedRef.current = onSynced; }, [onSynced]);
 
@@ -725,7 +783,6 @@ function MyTicketsTab({ currentUser, onNew, optimisticTicket, onSynced }) {
 
     let isMounted = true;
 
-    // Simple single-field query — no composite index needed
     const q = query(
       collection(db, "supportTickets"),
       where("userId", "==", currentUser.uid)
@@ -781,7 +838,6 @@ function MyTicketsTab({ currentUser, onNew, optimisticTicket, onSynced }) {
         }}>+ New Ticket</button>
       </div>
 
-      {/* Index-building / error banner */}
       {error && (
         <div style={{
           marginBottom: 16, padding: "10px 14px", borderRadius: 10,
@@ -829,7 +885,6 @@ function MyTicketsTab({ currentUser, onNew, optimisticTicket, onSynced }) {
                   }}
                 >
                   <div style={{ display: "flex", alignItems: "center", gap: 9, flex: 1, minWidth: 0 }}>
-                    {/* Unread response indicator */}
                     {hasResponse && (
                       <span style={{
                         width: 8, height: 8, borderRadius: "50%",
@@ -868,7 +923,6 @@ function MyTicketsTab({ currentUser, onNew, optimisticTicket, onSynced }) {
                     borderTop: `1px solid ${V.border}`,
                     animation: "ecosort-fadein .15s ease",
                   }}>
-
                     {/* Meta row */}
                     <div style={{ display: "flex", gap: 16, fontSize: 12, color: V.muted,
                       marginBottom: 12, flexWrap: "wrap" }}>

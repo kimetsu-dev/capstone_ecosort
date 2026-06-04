@@ -14,6 +14,8 @@ import {
   doc,
   limit,
 } from "firebase/firestore";
+// getDoc is used by usePointsTamperWatcher to re-read the live value after the
+// async ledger check settles, avoiding stale-closure false alarms.
 import { db } from "../firebase";
 import {
   initMessaging,
@@ -21,17 +23,11 @@ import {
   onMessageListener,
 } from "../firebase-messaging";
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
 const DAYS_LONG = [
   "sunday", "monday", "tuesday", "wednesday",
   "thursday", "friday", "saturday",
 ];
 
-/**
- * Returns true when a schedule applies to the given date.
- * Mirrors the same logic used in DashboardCalendar for consistency.
- */
 function isScheduledForDate(date, schedule) {
   const dayName = date
     .toLocaleDateString("en-US", { weekday: "long" })
@@ -44,7 +40,6 @@ function isScheduledForDate(date, schedule) {
     return schedule.day === dayName;
   }
 
-  // Collection schedule
   if (schedule.day !== dayName) return false;
 
   const today = new Date();
@@ -98,16 +93,9 @@ function getTimeLabel(schedule, dayName) {
   return null;
 }
 
-// ─── Dedup key: prevent writing the same reminder more than once per day ──────
-
 function reminderKey(type, scheduleId, dateStr) {
   return `${type}__${scheduleId}__${dateStr}`;
 }
-
-// ─── Hook: Initialize FCM and request notification permission ────────────────
-// Runs once after login. Requests the browser permission prompt (if not already
-// granted), gets the FCM token, and saves it to Firestore so the Cloud Function
-// can send push notifications to this device even when the app is closed.
 
 function useFCMPermission(userId) {
   useEffect(() => {
@@ -122,11 +110,6 @@ function useFCMPermission(userId) {
   }, [userId]);
 }
 
-// ─── Hook: FCM foreground message handler ────────────────────────────────────
-// When the app IS open and a push arrives, FCM won't show a native notification
-// automatically — we intercept it here and show a toast instead, then write it
-// to Firestore so it also appears in the NotificationCenter bell.
-
 function useFCMForegroundMessages(userId) {
   useEffect(() => {
     if (!userId) return;
@@ -140,7 +123,6 @@ function useFCMForegroundMessages(userId) {
       const type    = data.type || "general";
       const message = body || title;
 
-      // Show an in-app toast
       const toastOptions = {
         position: "top-right",
         autoClose: 7000,
@@ -170,10 +152,6 @@ function useFCMForegroundMessages(userId) {
         toast.info(message, toastOptions);
       }
 
-      // Also persist to Firestore so it shows in the NotificationCenter bell.
-      // The Cloud Function already writes a Firestore notification doc, so we
-      // only write here if the payload explicitly signals it hasn't been written
-      // (i.e. for any future direct-push scenarios).
       if (data.writeNotification === "true") {
         try {
           const notifRef = collection(db, "notifications", userId, "userNotifications");
@@ -198,12 +176,11 @@ function useFCMForegroundMessages(userId) {
   }, [userId]);
 }
 
-// ─── Hook: real-time Firestore notification toasts ───────────────────────────
-// Listens for new unread docs in the user's notification subcollection and
-// fires in-app toasts for anything written AFTER the session started.
-
 function useUserNotifications(userId) {
   const sessionStartTime = useRef(Date.now());
+  // Tracks doc IDs already toasted this session (from FCM or a prior snapshot event)
+  // so that a single notification document never produces two toasts.
+  const toastedDocIds = useRef(new Set());
 
   useEffect(() => {
     if (!userId) return;
@@ -217,6 +194,12 @@ function useUserNotifications(userId) {
     const unsubscribe = onSnapshot(notifQuery, (snapshot) => {
       snapshot.docChanges().forEach((change) => {
         if (change.type === "added") {
+          const docId = change.doc.id;
+
+          // Skip if this document was already toasted this session
+          if (toastedDocIds.current.has(docId)) return;
+          toastedDocIds.current.add(docId);
+
           const notification = change.doc.data();
           const notifTime =
             notification.createdAt?.toMillis() || Date.now();
@@ -270,16 +253,6 @@ function useUserNotifications(userId) {
   }, [userId]);
 }
 
-// ─── Hook: generate schedule reminders ───────────────────────────────────────
-/**
- * Runs once per session (on mount) and checks whether any collection /
- * submission schedule falls on:
- *   • TODAY    → fires an immediate "don't forget!" reminder
- *   • TOMORROW → fires an advance "heads-up" reminder
- *
- * A Firestore doc is written per reminder so it also appears in the
- * NotificationCenter. Dedup prevents duplicate writes on the same day.
- */
 function useScheduleReminders(userId) {
   useEffect(() => {
     if (!userId) return;
@@ -347,15 +320,12 @@ function useScheduleReminders(userId) {
 
         const writes = [];
 
-        // ── Collection schedule reminders ──────────────────────────────────
-
         for (const s of collectionSchedules) {
           const areaLabel = s.barangay
             ? `${s.area}, ${s.barangay}`
             : s.area || "your area";
           const timeLabel = getTimeLabel(s, todayDayName);
 
-          // Today
           if (isScheduledForDate(today, s)) {
             const key = reminderKey("col_today", s.id, todayStr);
             if (!existingKeys.has(key)) {
@@ -377,7 +347,6 @@ function useScheduleReminders(userId) {
             }
           }
 
-          // Tomorrow
           if (isScheduledForDate(tomorrow, s)) {
             const tTimeLabel = getTimeLabel(s, tomorrowDayName);
             const key = reminderKey("col_tomorrow", s.id, tomorrowStr);
@@ -401,15 +370,12 @@ function useScheduleReminders(userId) {
           }
         }
 
-        // ── Submission schedule reminders ──────────────────────────────────
-
         for (const s of submissionSchedules) {
           const areaLabel = s.barangay
             ? `${s.area}, ${s.barangay}`
             : s.area || "the drop-off point";
           const timeLabel = getTimeLabel(s, todayDayName);
 
-          // Today
           if (isScheduledForDate(today, s)) {
             const key = reminderKey("sub_today", s.id, todayStr);
             if (!existingKeys.has(key)) {
@@ -431,7 +397,6 @@ function useScheduleReminders(userId) {
             }
           }
 
-          // Tomorrow
           if (isScheduledForDate(tomorrow, s)) {
             const tTimeLabel = getTimeLabel(s, tomorrowDayName);
             const key = reminderKey("sub_tomorrow", s.id, tomorrowStr);
@@ -462,20 +427,9 @@ function useScheduleReminders(userId) {
     }
 
     checkAndFireReminders();
-    // Run once per session on mount — no interval needed
   }, [userId]);
 }
 
-// ─── Hook: notify user when admin responds to a support ticket ────────────────
-/**
- * Watches the user's supportTickets for any document where:
- *   • adminResponse is a non-empty string  (admin has replied)
- *   • the change arrives AFTER this session started (prevents re-toasting old responses)
- *
- * On detecting a new response it:
- *   1. Writes a `support_response` notification to Firestore (deduped per ticket)
- *   2. Fires an in-app toast so the user sees it immediately
- */
 function useSupportTicketResponses(userId) {
   const sessionStartTime = useRef(Date.now());
 
@@ -552,193 +506,135 @@ function useSupportTicketResponses(userId) {
   }, [userId]);
 }
 
-// ─── Hook: real-time points tamper detector ───────────────────────────────────
-/**
- * Watches the user's own `users/{uid}` document in real time.
- * The moment `totalPoints` changes in Firestore, it cross-checks the new value
- * against the sealed ledger blocks for that user.
- *
- * If the live value no longer matches the ledger-derived authoritative balance,
- * it immediately:
- *  1. Writes a `points_tampered` Firestore notification (→ bell + toast)
- *  2. Includes a before/after comparison so the user sees exactly what changed
- *
- * This fires on the CLIENT side — no admin action needed. Any direct Firestore
- * edit to totalPoints is caught the next time any session for that user is open.
- *
- * Guards:
- *  - Only fires after the first snapshot (skips the initial load so we don't
- *    alert on every login).
- *  - Debounced: won't fire twice for the same (previous → current) pair.
- *  - Won't fire if the new value MATCHES the ledger (i.e. a legitimate restore).
- */
 function usePointsTamperWatcher(userId) {
   const initialLoadDone  = useRef(false);
-  const lastKnownPoints  = useRef(null);   // last value we saw that matched the ledger
-  const lastAlertedPair  = useRef(null);   // "prevPts→tamperedPts" already alerted
+  const lastKnownPoints  = useRef(null);
+  const lastAlertedPair  = useRef(null);
+  const timeoutRef       = useRef(null);
+  // Prevents a stale in-flight check from updating lastKnownPoints after a
+  // newer snapshot has already superseded it.
+  const checkVersionRef  = useRef(0);
 
   useEffect(() => {
     if (!userId) return;
 
     const userRef = doc(db, 'users', userId);
 
-    const unsubscribe = onSnapshot(userRef, async (docSnap) => {
+    const unsubscribe = onSnapshot(userRef, (docSnap) => {
       if (!docSnap.exists()) return;
 
       const livePts = docSnap.data().totalPoints ?? 0;
 
-      // ── First snapshot: just record the baseline, don't alert ──────────────
       if (!initialLoadDone.current) {
         initialLoadDone.current = true;
         lastKnownPoints.current = livePts;
         return;
       }
 
-      // ── No change at all ───────────────────────────────────────────────────
       if (livePts === lastKnownPoints.current) return;
 
-      // ── Cross-check against sealed ledger blocks ───────────────────────────
-      try {
-        const BALANCE_ACTION_TYPES = new Set([
-          'SUBMISSION_CONFIRMED',
-          'ADMIN_POINTS_AWARDED',
-          'REWARD_REDEEMED',
-          'REDEMPTION_CANCELLED',
-        ]);
+      // Debounce: cancel any pending check and start a fresh one.
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
 
-        // Read the integration cutoff
-        const trackerSnap = await getDoc(doc(db, 'system', 'ledger_tracker'));
-        const integratedAt = trackerSnap.exists()
-          ? (trackerSnap.data().blockchainIntegratedAt ?? null)
-          : null;
+      // Stamp this check so stale async completions can be ignored.
+      const myVersion = ++checkVersionRef.current;
 
-        let cutoffMs = null;
-        if (integratedAt) {
-          cutoffMs = new Date(integratedAt).getTime();
-        } else {
-          try {
-            const gSnap = await getDocs(
-              query(collection(db, 'ledger'), orderBy('index', 'asc'), limit(1))
-            );
-            if (!gSnap.empty) {
-              const ts = gSnap.docs[0].data().timestamp;
-              if (ts) cutoffMs = new Date(ts).getTime();
+      timeoutRef.current = setTimeout(async () => {
+        try {
+          // IMPORTANT: BALANCE_ACTION_TYPES must exactly mirror restoreUserBalance()
+          // in blockchainService.js. Any divergence causes permanent false alarms.
+          const BALANCE_ACTION_TYPES = new Set([
+            'SUBMISSION_CONFIRMED',
+            'ADMIN_POINTS_AWARDED',
+            'ADMIN_POINTS_DEDUCTED',
+            'REWARD_REDEEMED',
+            'REDEMPTION_CANCELLED',
+          ]);
+
+          const ledgerSnap = await getDocs(
+            query(collection(db, 'ledger'), where('userId', '==', userId), orderBy('index', 'asc'))
+          );
+
+          // Bail if a newer snapshot has already superseded this check.
+          if (myVersion !== checkVersionRef.current) return;
+
+          let ledgerSum = 0;
+
+          ledgerSnap.docs.forEach(d => {
+            const b = d.data();
+            // POINTS_RESET zeroes the running balance at that point in time.
+            if (b.actionType === 'POINTS_RESET') {
+              ledgerSum = 0;
+              return;
             }
-          } catch (_) { /* non-critical */ }
-        }
-
-        // Replay this user's sealed ledger blocks to get the authoritative total
-        const ledgerSnap = await getDocs(
-          query(
-            collection(db, 'ledger'),
-            where('userId', '==', userId),
-            orderBy('index', 'asc')
-          )
-        );
-
-        let ledgerSum = 0;
-        ledgerSnap.docs.forEach(d => {
-          const b = d.data();
-          if (!BALANCE_ACTION_TYPES.has(b.actionType)) return;
-          if (cutoffMs !== null) {
-            const bMs = b.timestamp ? new Date(b.timestamp).getTime() : null;
-            if (bMs !== null && bMs < cutoffMs) return;
-          }
-          const pts =
-            b.metadata?.txPoints !== undefined && b.metadata?.txPoints !== null
+            if (!BALANCE_ACTION_TYPES.has(b.actionType)) return;
+            const pts = b.metadata?.txPoints !== undefined && b.metadata?.txPoints !== null
               ? b.metadata.txPoints
               : (b.points || 0);
-          ledgerSum += pts;
-        });
-        ledgerSum = Math.round(ledgerSum * 100) / 100;
-
-        // No ledger blocks yet — can't verify, skip
-        if (ledgerSum === 0 && ledgerSnap.docs.length === 0) {
-          lastKnownPoints.current = livePts;
-          return;
-        }
-
-        // Pre-integration users: baseline may include pre-ledger points.
-        // We can only flag a discrepancy when the current value is LOWER than
-        // what the ledger says it should contribute, which is a clear reduction.
-        const roundedLive = Math.round(livePts * 100) / 100;
-
-        // Consider the pre-integration portion: anything in the balance that
-        // isn't explained by post-integration ledger blocks. We use the last
-        // known-good value to derive it safely.
-        const lastGood = lastKnownPoints.current ?? livePts;
-        const preIntegrationPortion = Math.max(0,
-          Math.round((lastGood - ledgerSum) * 100) / 100
-        );
-        const expectedBalance = Math.round(
-          (preIntegrationPortion + ledgerSum) * 100
-        ) / 100;
-
-        if (roundedLive !== expectedBalance) {
-          // Deduplicate: don't fire the same (expected → tampered) alert twice
-          const alertKey = `${expectedBalance}→${roundedLive}`;
-          if (lastAlertedPair.current === alertKey) return;
-          lastAlertedPair.current = alertKey;
-
-          const delta = Math.round((roundedLive - expectedBalance) * 100) / 100;
-          const direction = delta < 0 ? 'decreased' : 'increased';
-          const absDelta  = Math.abs(delta);
-
-          const notifRef = collection(db, 'notifications', userId, 'userNotifications');
-          await addDoc(notifRef, {
-            type:       'points_tampered',
-            title:      '⚠️ Points Change Detected',
-            message:
-              `Your points were ${direction} by ${absDelta} pts without a matching transaction. ` +
-              `Expected: ${expectedBalance} pts — Current: ${roundedLive} pts.`,
-            read:       false,
-            previousBalance: expectedBalance,
-            tamperedBalance: roundedLive,
-            delta,
-            detectedAt: new Date().toISOString(),
-            createdAt:  serverTimestamp(),
+            ledgerSum += pts;
           });
 
-          console.warn(
-            `[PointsTamperWatcher] Detected change for user '${userId}': ` +
-            `expected ${expectedBalance} pts, got ${roundedLive} pts (Δ ${delta}).`
-          );
-        } else {
-          // Values match → this was a legitimate change; update our baseline
-          lastKnownPoints.current  = livePts;
-          lastAlertedPair.current  = null; // reset dedup so future changes are caught
+          ledgerSum = Math.round(ledgerSum * 100) / 100;
+
+          // Re-read the live value at check time (not the captured closure value)
+          // so a rapid reset → re-award sequence resolves correctly.
+          const currentDocSnap = await getDoc(doc(db, 'users', userId));
+          if (!currentDocSnap.exists()) return;
+          const currentLivePts = currentDocSnap.data().totalPoints ?? 0;
+
+          // Now safe to advance lastKnownPoints — the ledger read has settled.
+          lastKnownPoints.current = currentLivePts;
+
+          if (ledgerSnap.docs.length === 0) return;
+
+          const roundedLive     = Math.round(currentLivePts * 100) / 100;
+          const expectedBalance = ledgerSum;
+
+          if (roundedLive !== expectedBalance) {
+            const alertKey = `${expectedBalance}→${roundedLive}`;
+            if (lastAlertedPair.current === alertKey) return;
+            lastAlertedPair.current = alertKey;
+
+            const delta     = Math.round((roundedLive - expectedBalance) * 100) / 100;
+            const direction = delta < 0 ? 'decreased' : 'increased';
+            const absDelta  = Math.abs(delta);
+
+            const notifRef = collection(db, 'notifications', userId, 'userNotifications');
+            await addDoc(notifRef, {
+              type:            'points_tampered',
+              title:           '⚠️ Points Change Detected',
+              message:
+                `Your points were ${direction} by ${absDelta} pts without a matching transaction. ` +
+                `Expected: ${expectedBalance} pts — Current: ${roundedLive} pts.`,
+              read:            false,
+              previousBalance: expectedBalance,
+              tamperedBalance: roundedLive,
+              delta,
+              detectedAt:      new Date().toISOString(),
+              createdAt:       serverTimestamp(),
+            });
+          } else {
+            lastAlertedPair.current = null;
+          }
+        } catch (err) {
+          console.error('[PointsTamperWatcher] Verification failed:', err);
         }
-      } catch (err) {
-        console.error('[PointsTamperWatcher] Verification failed (non-critical):', err);
-        // On error, update baseline so we don't spam on every snapshot
-        lastKnownPoints.current = livePts;
-      }
+      }, 5000); // 5s debounce — gives addToLedger() time to commit before we check
     });
 
-    return () => unsubscribe();
+    return () => {
+      unsubscribe();
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    };
   }, [userId]);
 }
 
-// ─── Component ────────────────────────────────────────────────────────────────
-
 export default function NotificationsListener({ userId }) {
-  // Request FCM permission and save token to Firestore (enables background push)
   useFCMPermission(userId);
-
-  // Handle FCM messages received while app is open (foreground)
   useFCMForegroundMessages(userId);
-
-  // Firestore-driven in-app toasts
   useUserNotifications(userId);
-
-  // Schedule reminders (today / tomorrow)
   useScheduleReminders(userId);
-
-  // Support ticket reply toasts
   useSupportTicketResponses(userId);
-
-  // Real-time points tamper detector — fires the moment totalPoints changes
-  // without a matching ledger entry, before any admin action is needed
   usePointsTamperWatcher(userId);
 
   return (

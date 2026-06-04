@@ -298,7 +298,9 @@ function PostFormModal({ isOpen, onClose, isDark, currentUser, showToast }) {
         uploadedMediaUrl = await getDownloadURL(fileRef);
       }
 
-      await addDoc(collection(db, "violation_reports"), {
+      // FIX: Posts now correctly saved to the "posts" collection,
+      // which has Firestore rules allowing authors to delete their own posts.
+      await addDoc(collection(db, "posts"), {
         type: 'post', 
         title: formData.title,
         description: formData.description, 
@@ -729,7 +731,7 @@ function FeedItem({
         {/* Actions */}
         <div className={`flex items-center gap-4 pt-3 border-t ${isDark ? 'border-gray-700' : 'border-gray-200'}`}>
           <button
-            onClick={() => handleLike(item.id, item.authorId)}
+            onClick={() => handleLike(item.id, item.authorId, item.collection)}
             className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm transition-colors ${
               isLiked ? "text-blue-500 bg-blue-50 dark:bg-blue-900/20" : "text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700"
             }`}
@@ -753,7 +755,7 @@ function FeedItem({
         <section className={`border-t ${isDark ? "border-gray-700" : "border-gray-100"} animate-slide-down`}>
           <CommentList comments={item.comments} isDark={isDark} />
           <div className={`p-4 border-t ${isDark ? "border-gray-700 bg-gray-800" : "border-gray-100 bg-gray-50"}`}>
-            <form onSubmit={(e) => { e.preventDefault(); commentSubmit(item.id, item.authorId); }} className="flex gap-2">
+            <form onSubmit={(e) => { e.preventDefault(); commentSubmit(item.id, item.authorId, item.collection); }} className="flex gap-2">
               <input
                 type="text"
                 placeholder="Write a comment..."
@@ -801,7 +803,7 @@ export default function Forum() {
   
   // Config
   const [categories, setCategories] = useState([{ id: "all", label: "All Categories", icon: "📋" }]);
-  const [severityLevels, setSeverityLevels] = useState([
+  const [severityLevels] = useState([
     { value: "low", label: "Low" },
     { value: "medium", label: "Medium" },
     { value: "high", label: "High" },
@@ -834,38 +836,69 @@ export default function Forum() {
     loadConfig();
   }, []);
 
-  // Fetching Data
+  // FIX: Listen to both "posts" and "violation_reports" collections separately,
+  // then merge them so each item carries its source collection for targeted operations.
   useEffect(() => {
     setLoading(true);
-    const q = query(collection(db, "violation_reports"), orderBy("submittedAt", "desc"));
-    
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const fetched = snapshot.docs.map((doc) => ({
-        id: doc.id,
-        ...doc.data(),
-        submittedAt: doc.data().submittedAt?.toDate() || new Date(),
-        type: doc.data().type || 'report', 
-      }));
-      setItems(fetched);
+    let postsData = [];
+    let reportsData = [];
+    let postsLoaded = false;
+    let reportsLoaded = false;
+
+    const merge = () => {
+      if (!postsLoaded || !reportsLoaded) return;
+      const merged = [...postsData, ...reportsData].sort(
+        (a, b) => b.submittedAt - a.submittedAt
+      );
+      setItems(merged);
       setLoading(false);
+    };
+
+    const postsQuery = query(collection(db, "posts"), orderBy("submittedAt", "desc"));
+    const unsubscribePosts = onSnapshot(postsQuery, (snapshot) => {
+      postsData = snapshot.docs.map((d) => ({
+        id: d.id,
+        ...d.data(),
+        collection: "posts",
+        type: "post",
+        submittedAt: d.data().submittedAt?.toDate() || new Date(),
+      }));
+      postsLoaded = true;
+      merge();
     });
-    return () => unsubscribe();
+
+    const reportsQuery = query(collection(db, "violation_reports"), orderBy("submittedAt", "desc"));
+    const unsubscribeReports = onSnapshot(reportsQuery, (snapshot) => {
+      reportsData = snapshot.docs.map((d) => ({
+        id: d.id,
+        ...d.data(),
+        collection: "violation_reports",
+        type: d.data().type || "report",
+        submittedAt: d.data().submittedAt?.toDate() || new Date(),
+      }));
+      reportsLoaded = true;
+      merge();
+    });
+
+    return () => {
+      unsubscribePosts();
+      unsubscribeReports();
+    };
   }, []);
 
   // --- Notification Helper ---
   const sendNotification = async (recipientId, message, type) => {
-    // Don't notify if sending to self or if currentUser isn't loaded
     if (!recipientId || !currentUser || recipientId === currentUser.uid) return;
     
     try {
       await addDoc(collection(db, "notifications", recipientId, "userNotifications"), {
         message,
-        type, // 'like', 'comment', etc.
+        type,
         createdAt: serverTimestamp(),
         read: false,
         fromName: currentUser.displayName || currentUser.email?.split('@')[0] || "User",
         fromPhoto: currentUser.photoURL || "",
-        linkId: "" // Optional: Could link to specific post ID
+        linkId: ""
       });
     } catch (err) {
       console.error("Error creating notification:", err);
@@ -873,22 +906,23 @@ export default function Forum() {
   };
 
   // Handlers
-  const handleLike = async (id, authorId) => {
+  // FIX: handleLike now uses item.collection to target the correct Firestore collection.
+  const handleLike = async (id, authorId, itemCollection) => {
     if (!currentUser) return showToast("Login required", "info");
-    const docRef = doc(db, "violation_reports", id);
+    const docRef = doc(db, itemCollection, id);
     const item = items.find(r => r.id === id);
     if (!item) return;
     
     const isLiked = item.likes?.includes(currentUser.uid);
     await updateDoc(docRef, { likes: isLiked ? arrayRemove(currentUser.uid) : arrayUnion(currentUser.uid) });
 
-    // Send Notification only on Like (not Unlike)
     if (!isLiked && authorId) {
       await sendNotification(authorId, `${currentUser.displayName || "A user"} liked your post`, 'like');
     }
   };
 
-  const commentSubmit = async (id, authorId) => {
+  // FIX: commentSubmit now uses item.collection to target the correct Firestore collection.
+  const commentSubmit = async (id, authorId, itemCollection) => {
     if (!currentUser) return showToast("Login required", "info");
     const text = commentText[id]?.trim();
     if (!text) return;
@@ -901,7 +935,7 @@ export default function Forum() {
       const username = userData.username || currentUser.displayName || currentUser.email.split('@')[0];
       const photoUrl = userData.profileUrl || currentUser.photoURL || "";
 
-      await updateDoc(doc(db, "violation_reports", id), {
+      await updateDoc(doc(db, itemCollection, id), {
         comments: arrayUnion({ 
           text, 
           user: username, 
@@ -910,7 +944,6 @@ export default function Forum() {
         })
       });
 
-      // Send Notification
       if (authorId) {
         await sendNotification(authorId, `${username} commented on your post`, 'comment');
       }
@@ -929,6 +962,8 @@ export default function Forum() {
     setDeleteModal({ isOpen: true, itemToDelete: item, isDeleting: false });
   };
 
+  // FIX: confirmDelete now uses item.collection to delete from the correct Firestore collection,
+  // so authors of posts (stored in "posts") and reports (stored in "violation_reports") can both delete.
   const confirmDelete = async () => {
     const { itemToDelete } = deleteModal;
     if (!itemToDelete) return;
@@ -943,12 +978,12 @@ export default function Forum() {
           await deleteObject(fileRef);
         } catch (storageError) {
           console.warn("Media deletion failed (might already be gone):", storageError);
-          // Continue to delete the document even if storage fails
         }
       }
 
-      // 2. Delete the document from Firestore
-      await deleteDoc(doc(db, "violation_reports", itemToDelete.id));
+      // 2. Delete the document from the correct Firestore collection
+      const targetCollection = itemToDelete.collection || "violation_reports";
+      await deleteDoc(doc(db, targetCollection, itemToDelete.id));
       showToast("Post deleted successfully", "success");
 
     } catch (error) {
@@ -1017,7 +1052,7 @@ export default function Forum() {
             </div>
           </div>
 
-          {/* Improved Tab Switcher */}
+          {/* Tab Switcher */}
           <div className="flex mt-6 gap-8">
             <button
               onClick={() => setActiveTab("posts")}
