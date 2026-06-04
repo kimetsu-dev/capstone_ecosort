@@ -1,5 +1,6 @@
-// Updated serviceWorkerRegistration.js
-// Enhanced to work with versioned EcoSort service-worker.js
+// serviceWorkerRegistration.js
+// Responsible for ONE thing: registering the SW and calling config callbacks.
+// All reload logic and event dispatching lives in index.js.
 
 const isLocalhost = Boolean(
   window.location.hostname === "localhost" ||
@@ -16,17 +17,12 @@ export function register(config) {
 
     window.addEventListener("load", () => {
       const swUrl = `${process.env.PUBLIC_URL}/service-worker.js`;
-
       if (isLocalhost) {
-        // Localhost: validate and log helpful info
         checkValidServiceWorker(swUrl, config);
         navigator.serviceWorker.ready.then(() => {
-          console.log(
-            "✅ This app is being served cache-first by a service worker. See https://cra.link/PWA"
-          );
+          console.log("✅ App is served cache-first by a service worker.");
         });
       } else {
-        // Production: just register
         registerValidSW(swUrl, config);
       }
     });
@@ -39,38 +35,30 @@ function registerValidSW(swUrl, config) {
     .then((registration) => {
       console.log("🧩 Service Worker registered:", registration.scope);
 
-      // Listen for new updates
+      // Check for updates once an hour
+      setInterval(() => registration.update(), 60 * 60 * 1000);
+
       registration.onupdatefound = () => {
         const installingWorker = registration.installing;
         if (!installingWorker) return;
 
         installingWorker.onstatechange = () => {
-          if (installingWorker.state === "installed") {
-            if (navigator.serviceWorker.controller) {
-              // New update available
-              console.log("🔄 New content is available!");
+          if (installingWorker.state !== "installed") return;
 
-              if (config && config.onUpdate) {
-                config.onUpdate(registration);
-              } else {
-                // Show prompt or auto-reload
-                showUpdatePrompt(registration);
-              }
-            } else {
-              console.log("📦 Content is cached for offline use.");
-              if (config && config.onSuccess) config.onSuccess(registration);
-            }
+          if (navigator.serviceWorker.controller) {
+            // A new SW is waiting — tell the app about it
+            console.log("🔄 New content available — calling onUpdate.");
+            config?.onUpdate?.(registration);
+          } else {
+            // First install — content is now cached
+            console.log("📦 Content cached for offline use.");
+            config?.onSuccess?.(registration);
           }
         };
       };
-
-      // Optional: periodically check for updates every hour
-      setInterval(() => {
-        registration.update();
-      }, 60 * 60 * 1000); // every 1 hour
     })
     .catch((error) => {
-      console.error("❌ Error during service worker registration:", error);
+      console.error("❌ Service worker registration failed:", error);
     });
 }
 
@@ -82,7 +70,6 @@ function checkValidServiceWorker(swUrl, config) {
         response.status === 404 ||
         (contentType != null && contentType.indexOf("javascript") === -1)
       ) {
-        // No service worker found – clear old one
         navigator.serviceWorker.ready.then((registration) => {
           registration.unregister().then(() => window.location.reload());
         });
@@ -91,7 +78,7 @@ function checkValidServiceWorker(swUrl, config) {
       }
     })
     .catch(() => {
-      console.log("⚠️ No internet connection found. App is offline.");
+      console.log("⚠️ No internet connection. App is running offline.");
     });
 }
 
@@ -102,40 +89,3 @@ export function unregister() {
       .catch((error) => console.error(error.message));
   }
 }
-
-/**
- * 🔔 Show update prompt or auto-activate new service worker.
- * This listens for the "waiting" service worker and activates it on user approval.
- */
-function showUpdatePrompt(registration) {
-  if (!registration || !registration.waiting) return;
-
-  const message =
-    "A new version of EcoSort is available! Would you like to update now?";
-  if (window.confirm(message)) {
-    // Trigger skipWaiting in service-worker.js
-    registration.waiting.postMessage({ type: "SKIP_WAITING" });
-
-    registration.waiting.addEventListener("statechange", (e) => {
-      if (e.target.state === "activated") {
-        console.log("✅ Updated to new service worker version. Reloading...");
-        window.location.reload();
-      }
-    });
-  } else {
-    console.log("User postponed update.");
-  }
-}
-
-// 🔎 Optional: Log current SW version for debugging
-navigator.serviceWorker?.ready?.then(async (reg) => {
-  try {
-    const response = await fetch(window.location.origin);
-    const swVersion = response.headers.get("X-SW-Version");
-    if (swVersion) {
-      console.log(`🌍 Active Service Worker version: ${swVersion}`);
-    }
-  } catch (e) {
-    // Silent fail if offline
-  }
-});

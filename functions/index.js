@@ -101,17 +101,33 @@ async function sendPush(userId, tokens, title, body, data) {
   }
 }
 
-// ─── Helper: write bell notification to Firestore ────────────────────────────
+// ─── Helper: write bell notification to Firestore (with dedup) ───────────────
+// dedupeKey: if provided, skips the write if a doc with that key already exists.
+// This prevents duplicate notifications when both the client and the Cloud
+// Function race to write the same event (e.g. rejection flows).
 
-async function writeNotification(userId, fields) {
-  await db
+async function writeNotification(userId, fields, dedupeKey = null) {
+  const colRef = db
     .collection("notifications").doc(userId)
-    .collection("userNotifications")
-    .add({
-      ...fields,
-      read:      false,
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
+    .collection("userNotifications");
+
+  if (dedupeKey) {
+    const existing = await colRef
+      .where("dedupeKey", "==", dedupeKey)
+      .limit(1)
+      .get();
+    if (!existing.empty) {
+      console.log(`Skipping duplicate notification (dedupeKey: ${dedupeKey})`);
+      return;
+    }
+  }
+
+  await colRef.add({
+    ...fields,
+    ...(dedupeKey ? { dedupeKey } : {}),
+    read:      false,
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+  });
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -165,7 +181,7 @@ exports.onSubmissionStatusChanged = onDocumentUpdated(
         ? { reason: after.rejectionReason } : {}),
       ...(newStatus === "approved" && after.pointsAwarded !== undefined
         ? { pointsAwarded: after.pointsAwarded } : {}),
-    });
+    }, `${type}__${submissionId}`);
 
     await sendPush(userId, tokens, title, body, {
       type,
@@ -217,7 +233,7 @@ exports.onRedemptionStatusChanged = onDocumentUpdated(
         redemptionId,
         rewardName,
         status:      "cancelled",
-      });
+      }, `redemption_cancelled__${redemptionId}`);
       return null;
     } else {
       return null;
@@ -232,7 +248,7 @@ exports.onRedemptionStatusChanged = onDocumentUpdated(
       redemptionId,
       rewardName,
       status: newStatus === "confirmed" ? "success" : "rejected",
-    });
+    }, `${type}__${redemptionId}`);
 
     await sendPush(userId, tokens, title, body, {
       type,

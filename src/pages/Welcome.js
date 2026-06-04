@@ -415,9 +415,7 @@ export default function Welcome() {
                   <span className="block bg-gradient-to-r from-emerald-600 via-teal-600 to-green-700 bg-clip-text text-transparent">
                     Ecosort
                   </span>
-                  <span className="block mt-1 sm:mt-2 text-2xl sm:text-3xl md:text-4xl lg:text-5xl">
-                    Smart Waste Management
-                  </span>
+                  
                 </h1>
                 <p className={`text-sm sm:text-base lg:text-lg xl:text-xl leading-relaxed max-w-2xl mx-auto ${styles.text.secondary}`}>
                   Transforming communities.

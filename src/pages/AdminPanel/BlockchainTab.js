@@ -86,7 +86,10 @@ const BlockchainTab = () => {
   };
 
   // Function to load the chain's integrity status
-  const loadChainStatus = async (initial = false) => {
+  // silent=true suppresses tamper/discrepancy notifications — used after a
+  // restore or repair so the post-action refresh doesn't re-fire alerts for
+  // the brief window where the ledger and balance are still converging.
+  const loadChainStatus = async (initial = false, silent = false) => {
     setLoading(true);
     setRepairResult(null); 
     setRecoveryResults({});
@@ -100,7 +103,8 @@ const BlockchainTab = () => {
 
       if (status.initialized) {
         // 2. Run full integrity check (Structural + Balance Reconciliation + TX Points Tamper)
-        const fullVerification = await runAllIntegrityChecks();
+        // Pass silent through so post-restore reloads don't spam notifications.
+        const fullVerification = await runAllIntegrityChecks({ silent });
 
         setChainStatus({ 
           ...status, 
@@ -206,7 +210,7 @@ const BlockchainTab = () => {
                 ? ` Also restored ${result.restoredPointsCount} block point value(s) from sealed txPoints.`
                 : '';
               alert(`Chain Repair Complete! Repaired ${result.repairedCount} blocks. New Latest Hash: ${hashPreview}${pointsNote}`);
-              await loadChainStatus();
+              await loadChainStatus(false, true);
             } else {
               alert(`Chain Repair Stopped:\n\n${result.message}`);
             }
@@ -229,7 +233,7 @@ const BlockchainTab = () => {
         await acknowledgeTamper(blockIndex);
       }
       alert(`Tamper acknowledged and recorded on the ledger. You can now run Repair Chain.`);
-      await loadChainStatus();
+      await loadChainStatus(false, true);
     } catch (err) {
       alert("Failed to acknowledge tamper: " + err.message);
     } finally {
@@ -257,7 +261,7 @@ const BlockchainTab = () => {
         `Balance corrected: ${result.balanceRestore.previousBalance} → ${result.balanceRestore.ledgerBalance} pts.`
       );
       // Refresh the integrity status so the tampered entry disappears from the list
-      await loadChainStatus();
+      await loadChainStatus(false, true);
     } catch (err) {
       setRecoveryResults(prev => ({ ...prev, [entry.blockId]: { success: false, error: err.message } }));
       alert("Recovery failed: " + err.message);
@@ -300,7 +304,7 @@ const BlockchainTab = () => {
         });
         alert(`✅ Balance restored for user '${userId}': ${result.previousBalance} → ${result.ledgerBalance} pts.`);
         // Always reload so the restored user disappears from the differences list
-        await loadChainStatus();
+        await loadChainStatus(false, true);
       }
     } catch (err) {
       setBalanceRestoreResults(prev => ({ ...prev, [userId]: { success: false, error: err.message } }));

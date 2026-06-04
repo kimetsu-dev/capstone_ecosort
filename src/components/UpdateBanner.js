@@ -1,60 +1,44 @@
 // src/components/UpdateBanner.js
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { FiDownload, FiX } from 'react-icons/fi';
 
 export default function UpdateBanner() {
   const [showBanner, setShowBanner] = useState(false);
   const [registration, setRegistration] = useState(null);
 
+  // Listen for the swUpdated event dispatched by index.js onUpdate
   useEffect(() => {
     const handleUpdate = (event) => {
-      setRegistration(event.detail);
+      const reg = event.detail;
+      if (!reg?.waiting) return;
+      setRegistration(reg);
       setShowBanner(true);
     };
 
-    // Listen for the custom event dispatched by serviceWorkerRegistration.js
     window.addEventListener('swUpdated', handleUpdate);
-
-    return () => {
-      window.removeEventListener('swUpdated', handleUpdate);
-    };
+    return () => window.removeEventListener('swUpdated', handleUpdate);
   }, []);
 
-  useEffect(() => {
-    // ✅ FIX: When the user clicks "Update Now", we post SKIP_WAITING to the
-    // waiting SW. Once it activates and takes control, the browser fires
-    // 'controllerchange'. We listen for that here and do ONE intentional
-    // reload — this is the only place a reload should ever be triggered.
-    // Previously this listener was missing, so the new SW would activate
-    // silently and the user would still be running stale code.
-    let refreshing = false;
-    const handleControllerChange = () => {
-      if (refreshing) return; // guard against double-fire
-      refreshing = true;
-      console.log('✅ New service worker activated — reloading for fresh content.');
-      window.location.reload();
-    };
-
-    navigator.serviceWorker?.addEventListener('controllerchange', handleControllerChange);
-
-    return () => {
-      navigator.serviceWorker?.removeEventListener('controllerchange', handleControllerChange);
-    };
-  }, []);
+  // NOTE: controllerchange → reload is handled in index.js only.
+  // Nothing here triggers a reload — UpdateBanner only calls skipWaiting,
+  // which causes controllerchange to fire, which index.js catches and reloads.
 
   const handleUpdateClick = () => {
-    if (registration && registration.waiting) {
-      // Tell the waiting SW to skip its waiting phase and activate.
-      // The 'controllerchange' listener above will then reload the page.
-      registration.waiting.postMessage({ type: 'SKIP_WAITING' });
-      setShowBanner(false);
+    if (!registration?.waiting) {
+      // Waiting SW already activated on its own — just reload
+      window.location.reload();
+      return;
     }
+    registration.waiting.postMessage({ type: 'SKIP_WAITING' });
+    setShowBanner(false);
   };
 
   const handleDismiss = () => {
     setShowBanner(false);
-    // Re-surface the banner after 5 minutes in case user wants to update later
-    setTimeout(() => setShowBanner(true), 300000);
+    // Re-surface after 5 minutes only if there's still a waiting SW
+    setTimeout(() => {
+      if (registration?.waiting) setShowBanner(true);
+    }, 300000);
   };
 
   if (!showBanner) return null;

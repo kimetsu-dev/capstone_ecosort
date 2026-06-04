@@ -11,8 +11,6 @@ import { ThemeProvider } from "./contexts/ThemeContext";
 import { isSupported } from "firebase/messaging";
 
 async function registerFirebaseMessagingSW() {
-  // Allow in both production AND development so you can test push notifications locally.
-  // In production this is required for background push to work.
   if (await isSupported()) {
     try {
       await navigator.serviceWorker.register("/firebase-messaging-sw.js");
@@ -42,49 +40,44 @@ root.render(
   </ThemeProvider>
 );
 
-// ✅ Enhanced service worker registration with auto-update support
+// ── Service Worker Registration ───────────────────────────────────────────────
 serviceWorkerRegistration.register({
   onSuccess: (registration) => {
-    console.log('✅ Service worker registered successfully');
-    
-    // Check for updates every 60 seconds
-    setInterval(() => {
-      registration.update();
-      console.log('🔄 Checking for updates...');
-    }, 60000);
+    console.log("✅ App is cached for offline use.");
   },
   onUpdate: (registration) => {
-    console.log('🎉 New version available!');
-    
-    // Store the registration globally so UpdateBanner component can access it
-    if (registration && registration.waiting) {
-      // Dispatch custom event that UpdateBanner will listen to
-      window.dispatchEvent(
-        new CustomEvent('swUpdated', { detail: registration })
-      );
-    }
+    console.log("🎉 New version available — notifying UpdateBanner.");
+    // Dispatch the event UpdateBanner listens for.
+    // This is the ONE place this event is ever dispatched.
+    window.dispatchEvent(
+      new CustomEvent("swUpdated", { detail: registration })
+    );
   },
 });
 
-// Listen for controller change and reload
-if ('serviceWorker' in navigator) {
-  let refreshing = false; // Prevent multiple reloads
-  navigator.serviceWorker.addEventListener('controllerchange', () => {
+// ── Controller Change → Reload ────────────────────────────────────────────────
+// This is the ONE place a reload-on-update is triggered.
+// UpdateBanner calls skipWaiting() on the waiting SW, which causes
+// controllerchange to fire here, which reloads the page with fresh assets.
+if ("serviceWorker" in navigator) {
+  let refreshing = false;
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
     if (refreshing) return;
     refreshing = true;
-    console.log('🔄 New service worker activated, reloading...');
+    console.log("🔄 New service worker activated — reloading for fresh content.");
     window.location.reload();
   });
 }
-// Check for updates when app comes back into focus
-document.addEventListener('visibilitychange', () => {
-  if (!document.hidden && 'serviceWorker' in navigator) {
+
+// ── Check for updates when app comes back into focus ─────────────────────────
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && "serviceWorker" in navigator) {
     navigator.serviceWorker.ready.then((registration) => {
       registration.update();
-      console.log('👀 App focused, checking for updates...');
+      console.log("👀 App focused — checking for updates...");
     });
   }
 });
 
-// ✅ Register Firebase Messaging SW only in production + supported browsers
+// ── Firebase Messaging SW ─────────────────────────────────────────────────────
 registerFirebaseMessagingSW();

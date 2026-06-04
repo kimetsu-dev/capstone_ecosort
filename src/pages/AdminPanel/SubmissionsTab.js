@@ -375,23 +375,6 @@ const SubmissionsTab = ({
         ...(reason ? { rejectionReason: reason } : {}),
       });
 
-      const message = reason
-        ? `Your waste submission has been rejected. Reason: ${reason}`
-        : "Your waste submission has been rejected. Please review the guidelines and try again.";
-
-      // Use "submission_rejected" type so useUserNotifications renders the
-      // correct ❌ toast instead of the generic info toast.
-      await addNotification(
-        userId,
-        message,
-        "submission_rejected",
-        {
-          title: "Submission Rejected",
-          status: "rejected",
-          ...(reason ? { reason } : {}),
-        }
-      );
-
       // 📋 Record the rejection as a visible transaction entry (0 pts, for history clarity)
       await addDoc(collection(db, "point_transactions"), {
         userId,

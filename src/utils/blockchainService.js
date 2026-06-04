@@ -739,47 +739,52 @@ export async function verifyTransactionPointsTampering() {
   }
 }
 
-export async function runAllIntegrityChecks() {
+export async function runAllIntegrityChecks({ silent = false } = {}) {
   try {
     const chainVerification = await verifyBlockchain();
     const dataVerification = await verifyPointTransactions();
     const txPointsVerification = await verifyTransactionPointsTampering();
 
-    if (txPointsVerification.tampered && txPointsVerification.tampered.length > 0) {
-      const notifiedUsers = new Set();
-      for (const entry of txPointsVerification.tampered) {
-        if (!entry.userId || entry.userId === 'SYSTEM') continue;
-        if (notifiedUsers.has(entry.userId)) continue;
-        notifiedUsers.add(entry.userId);
-        sendTamperNotification(entry.userId, 'points_tampered', {
-          title: '⚠️ Points Tampering Detected',
-          message:
-            'An unauthorized change to your points record was detected by the ' +
-            'ledger integrity system. Our team has been alerted and your correct ' +
-            'balance will be restored automatically.',
-          blockId: entry.blockId,
-          firestoreId: entry.firestoreId,
-          detectedAt: new Date().toISOString(),
-        }).catch(err => console.warn('Immediate tamper notification failed (non-critical):', err));
+    // silent=true is passed by loadChainStatus() after a restore/repair so that
+    // a temporary ledger-vs-balance delta during the commit window does not fire
+    // spurious "discrepancy detected" notifications at the user.
+    if (!silent) {
+      if (txPointsVerification.tampered && txPointsVerification.tampered.length > 0) {
+        const notifiedUsers = new Set();
+        for (const entry of txPointsVerification.tampered) {
+          if (!entry.userId || entry.userId === 'SYSTEM') continue;
+          if (notifiedUsers.has(entry.userId)) continue;
+          notifiedUsers.add(entry.userId);
+          sendTamperNotification(entry.userId, 'points_tampered', {
+            title: '⚠️ Points Tampering Detected',
+            message:
+              'An unauthorized change to your points record was detected by the ' +
+              'ledger integrity system. Our team has been alerted and your correct ' +
+              'balance will be restored automatically.',
+            blockId: entry.blockId,
+            firestoreId: entry.firestoreId,
+            detectedAt: new Date().toISOString(),
+          }).catch(err => console.warn('Immediate tamper notification failed (non-critical):', err));
+        }
       }
-    }
 
-    if (dataVerification.differences && dataVerification.differences.length > 0) {
-      const notifiedUserIds = new Set(
-        txPointsVerification.tampered?.map(e => e.userId) ?? []
-      );
-      for (const diff of dataVerification.differences) {
-        if (!diff.userId || diff.userId === 'SYSTEM') continue;
-        if (notifiedUserIds.has(diff.userId)) continue;
-        notifiedUserIds.add(diff.userId);
-        sendTamperNotification(diff.userId, 'points_tampered', {
-          title: '⚠️ Points Balance Discrepancy Detected',
-          message:
-            'A discrepancy was found between your points balance and the sealed ' +
-            'ledger record. Our team has been alerted and your correct balance ' +
-            'will be restored automatically.',
-          detectedAt: new Date().toISOString(),
-        }).catch(err => console.warn('Immediate balance-discrepancy notification failed (non-critical):', err));
+      if (dataVerification.differences && dataVerification.differences.length > 0) {
+        const notifiedUserIds = new Set(
+          txPointsVerification.tampered?.map(e => e.userId) ?? []
+        );
+        for (const diff of dataVerification.differences) {
+          if (!diff.userId || diff.userId === 'SYSTEM') continue;
+          if (notifiedUserIds.has(diff.userId)) continue;
+          notifiedUserIds.add(diff.userId);
+          sendTamperNotification(diff.userId, 'points_tampered', {
+            title: '⚠️ Points Balance Discrepancy Detected',
+            message:
+              'A discrepancy was found between your points balance and the sealed ' +
+              'ledger record. Our team has been alerted and your correct balance ' +
+              'will be restored automatically.',
+            detectedAt: new Date().toISOString(),
+          }).catch(err => console.warn('Immediate balance-discrepancy notification failed (non-critical):', err));
+        }
       }
     }
 

@@ -394,23 +394,6 @@ const RedemptionsTab = ({
         }
       });
 
-      // 4. Notify the user — use "redemption_rejected" type so the correct
-      //    toast style is applied in useUserNotifications.
-      const message = reason
-        ? `Your redemption for "${redemption.rewardName || "reward"}" was rejected. Reason: ${reason}. ${refundPoints > 0 ? `${refundPoints} points have been refunded to your account.` : ""}`
-        : `Your redemption for "${redemption.rewardName || "reward"}" has been rejected. ${refundPoints > 0 ? `${refundPoints} points have been refunded to your account.` : ""}`;
-
-      await addNotification(
-        redemption.userId,
-        message,
-        "redemption_rejected",
-        {
-          title: "Redemption Rejected",
-          status: "rejected",
-          ...(reason ? { reason } : {}),
-        }
-      );
-
       showToast(`Redemption rejected — ${refundPoints} pts refunded to user`, "success");
     } catch (error) {
       console.error("Failed to reject redemption:", error);

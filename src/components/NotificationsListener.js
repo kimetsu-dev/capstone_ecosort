@@ -110,7 +110,7 @@ function useFCMPermission(userId) {
   }, [userId]);
 }
 
-function useFCMForegroundMessages(userId) {
+function useFCMForegroundMessages(userId, toastedDocIds) {
   useEffect(() => {
     if (!userId) return;
 
@@ -152,10 +152,13 @@ function useFCMForegroundMessages(userId) {
         toast.info(message, toastOptions);
       }
 
+      // When FCM writes the Firestore doc itself, pre-register the new doc ID in
+      // toastedDocIds so the Firestore snapshot listener (useUserNotifications) 
+      // won't fire a second toast for the same event.
       if (data.writeNotification === "true") {
         try {
           const notifRef = collection(db, "notifications", userId, "userNotifications");
-          await addDoc(notifRef, {
+          const newDoc = await addDoc(notifRef, {
             type,
             title,
             message: body,
@@ -164,6 +167,8 @@ function useFCMForegroundMessages(userId) {
             ...(data.submissionId && { submissionId: data.submissionId }),
             ...(data.ticketId     && { ticketId:     data.ticketId     }),
           });
+          // Mark as already toasted so the Firestore listener skips it
+          toastedDocIds.current.add(newDoc.id);
         } catch (err) {
           console.error("Failed to persist FCM foreground notification:", err);
         }
@@ -176,11 +181,8 @@ function useFCMForegroundMessages(userId) {
   }, [userId]);
 }
 
-function useUserNotifications(userId) {
+function useUserNotifications(userId, toastedDocIds) {
   const sessionStartTime = useRef(Date.now());
-  // Tracks doc IDs already toasted this session (from FCM or a prior snapshot event)
-  // so that a single notification document never produces two toasts.
-  const toastedDocIds = useRef(new Set());
 
   useEffect(() => {
     if (!userId) return;
@@ -580,7 +582,20 @@ function usePointsTamperWatcher(userId) {
           // so a rapid reset → re-award sequence resolves correctly.
           const currentDocSnap = await getDoc(doc(db, 'users', userId));
           if (!currentDocSnap.exists()) return;
-          const currentLivePts = currentDocSnap.data().totalPoints ?? 0;
+          const currentData = currentDocSnap.data();
+          const currentLivePts = currentData.totalPoints ?? 0;
+
+          // Suppress the alert if an admin restore just ran. restoreUserBalance()
+          // writes balanceRestoredAt at the same time it updates totalPoints.
+          // If that field was touched within the last 30 seconds, the change is
+          // intentional — not tampering — so we skip the alert entirely.
+          const restoredAt = currentData.balanceRestoredAt;
+          const restoredMs = restoredAt?.toMillis?.() ?? (restoredAt ? new Date(restoredAt).getTime() : 0);
+          if (restoredMs && Date.now() - restoredMs < 30_000) {
+            lastKnownPoints.current = currentLivePts;
+            lastAlertedPair.current = null;
+            return;
+          }
 
           // Now safe to advance lastKnownPoints — the ledger read has settled.
           lastKnownPoints.current = currentLivePts;
@@ -630,9 +645,14 @@ function usePointsTamperWatcher(userId) {
 }
 
 export default function NotificationsListener({ userId }) {
+  // Shared across both FCM and Firestore listener hooks so a doc written by FCM
+  // is immediately marked as toasted, preventing the Firestore snapshot from
+  // firing a duplicate toast for the same notification document.
+  const toastedDocIds = useRef(new Set());
+
   useFCMPermission(userId);
-  useFCMForegroundMessages(userId);
-  useUserNotifications(userId);
+  useFCMForegroundMessages(userId, toastedDocIds);
+  useUserNotifications(userId, toastedDocIds);
   useScheduleReminders(userId);
   useSupportTicketResponses(userId);
   usePointsTamperWatcher(userId);
