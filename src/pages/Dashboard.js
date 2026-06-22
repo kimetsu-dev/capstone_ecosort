@@ -475,6 +475,11 @@ export default function Dashboard() {
   }, [currentUserId]);
 
   // Fetch Recent Activity (Live Sync)
+  // Mirrors the exact transaction types shown in Transactions.js:
+  //   points_awarded, points_redeemed, points_refunded,
+  //   redemption_cancelled, submission_rejected, submission_cancelled
+  // Only point_transactions is used (no separate redemptions collection listener)
+  // so there are no duplicate entries.
   useEffect(() => {
     if (!currentUserId) return;
     setLoadingActivity(true);
@@ -488,96 +493,111 @@ export default function Dashboard() {
       return Number(ts) || 0;
     };
 
-    const wasteQuery  = query(collection(db, "waste_submissions"),  where("userId", "==", uid));
-    const transQuery  = query(collection(db, "point_transactions"), where("userId", "==", uid));
-    const redeemQuery = query(collection(db, "redemptions"),        where("userId", "==", uid));
-
-    // Use an object so every listener closure always reads the latest array
-    // from its siblings — plain `let` variables get stale when closures capture
-    // them at definition time and one fires before the others have loaded.
-    const acts = { waste: [], trans: [], redeem: [] };
-
-    const merge = () => {
-      const combined = [...acts.waste, ...acts.trans, ...acts.redeem];
-      combined.sort((a, b) => toMs(b.rawTimestamp) - toMs(a.rawTimestamp));
-      setRecentActivity(combined.slice(0, 5));
-      setLoadingActivity(false);
-    };
-
-    const unsubWaste = onSnapshot(wasteQuery, (snapshot) => {
-      acts.waste = [];
-      snapshot.forEach((docSnap) => {
-        const d = docSnap.data();
-        const ts = d.submittedAt;
-        if (!ts || toMs(ts) === 0) return;
-        const weight    = Number(d.weight || d.totalWeight || 0);
-        const pts       = Number(d.points || d.pointsEarned || 0);
-        const typeName  = d.type || d.wasteType || "Waste";
-        if (!typeName && weight <= 0) return;
-        acts.waste.push({
-          id:           docSnap.id,
-          type:         "waste_submission",
-          description:  `Submitted ${typeName}${weight > 0 ? ` — ${weight}kg` : ""}`,
-          points:       pts,
-          rawTimestamp: ts,
-          timestamp:    typeof ts.toDate === "function" ? ts.toDate() : new Date(toMs(ts)),
-          icon:         FaRecycle,
-          color:        "emerald",
-        });
-      });
-      merge();
-    });
+    // Single source of truth: point_transactions — same collection Transactions.js reads
+    const transQuery = query(collection(db, "point_transactions"), where("userId", "==", uid));
 
     const unsubTrans = onSnapshot(transQuery, (snapshot) => {
-      acts.trans = [];
+      const items = [];
       snapshot.forEach((docSnap) => {
         const d = docSnap.data();
         const ts = d.timestamp || d.createdAt;
         if (!ts || toMs(ts) === 0) return;
-        const pts          = Number(d.points || d.amount || 0);
-        const isRedeemed   = d.type === "points_redeemed";
-        const isAwarded    = d.type === "points_awarded";
-        if (!isAwarded && !isRedeemed) return;
-        if (pts <= 0 && isAwarded) return;
-        acts.trans.push({
-          id:           docSnap.id,
-          type:         isRedeemed ? "reward_redemption" : "points_earned",
-          description:  d.description || (isRedeemed ? `Redeemed reward` : `Points awarded`),
-          points:       isRedeemed ? -Math.abs(pts) : pts,
-          rawTimestamp: ts,
-          timestamp:    typeof ts.toDate === "function" ? ts.toDate() : new Date(toMs(ts)),
-          icon:         isRedeemed ? FaGift : FaTrophy,
-          color:        isRedeemed ? "amber" : "blue",
-        });
-      });
-      merge();
-    });
 
-    const unsubRedeem = onSnapshot(redeemQuery, (snapshot) => {
-      acts.redeem = [];
-      snapshot.forEach((docSnap) => {
-        const d = docSnap.data();
-        const ts = d.redeemedAt || d.createdAt;
-        if (!ts || toMs(ts) === 0) return;
-        const cost = Number(d.cost || d.points || d.amount || 0);
-        acts.redeem.push({
-          id:           docSnap.id,
-          type:         "reward_redemption",
-          description:  `Redeemed: ${d.rewardName || "reward"}`,
-          points:       -Math.abs(cost),
-          rawTimestamp: ts,
-          timestamp:    typeof ts.toDate === "function" ? ts.toDate() : new Date(toMs(ts)),
-          icon:         FaGift,
-          color:        "amber",
-        });
+        const pts = Number(d.points || d.amount || 0);
+
+        switch (d.type) {
+          case "points_awarded":
+            // Skip zero-point awarded entries (safety guard)
+            if (pts <= 0) return;
+            items.push({
+              id:           docSnap.id,
+              type:         "points_earned",
+              description:  d.description || "Points Earned",
+              points:       pts,
+              rawTimestamp: ts,
+              timestamp:    typeof ts.toDate === "function" ? ts.toDate() : new Date(toMs(ts)),
+              icon:         FaRecycle,
+              color:        "emerald",
+            });
+            break;
+
+          case "points_redeemed":
+            items.push({
+              id:           docSnap.id,
+              type:         "reward_redemption",
+              description:  d.description || d.rewardName || "Redeemed reward",
+              points:       -Math.abs(pts),
+              rawTimestamp: ts,
+              timestamp:    typeof ts.toDate === "function" ? ts.toDate() : new Date(toMs(ts)),
+              icon:         FaGift,
+              color:        "amber",
+            });
+            break;
+
+          case "points_refunded":
+            items.push({
+              id:           docSnap.id,
+              type:         "points_refunded",
+              description:  d.description || "Points Refunded",
+              points:       Math.abs(pts),  // refund returns points (positive)
+              rawTimestamp: ts,
+              timestamp:    typeof ts.toDate === "function" ? ts.toDate() : new Date(toMs(ts)),
+              icon:         FaGift,
+              color:        "blue",
+            });
+            break;
+
+          case "redemption_cancelled":
+            items.push({
+              id:           docSnap.id,
+              type:         "redemption_cancelled",
+              description:  d.description || "Redemption Cancelled",
+              points:       Math.abs(pts),  // refund returns points (positive)
+              rawTimestamp: ts,
+              timestamp:    typeof ts.toDate === "function" ? ts.toDate() : new Date(toMs(ts)),
+              icon:         FaGift,
+              color:        "blue",
+            });
+            break;
+
+          case "submission_rejected":
+            items.push({
+              id:           docSnap.id,
+              type:         "submission_rejected",
+              description:  d.description || "Submission Rejected",
+              points:       0,
+              rawTimestamp: ts,
+              timestamp:    typeof ts.toDate === "function" ? ts.toDate() : new Date(toMs(ts)),
+              icon:         FaRecycle,
+              color:        "red",
+            });
+            break;
+
+          case "submission_cancelled":
+            items.push({
+              id:           docSnap.id,
+              type:         "submission_cancelled",
+              description:  d.description || "Submission Cancelled",
+              points:       0,
+              rawTimestamp: ts,
+              timestamp:    typeof ts.toDate === "function" ? ts.toDate() : new Date(toMs(ts)),
+              icon:         FaRecycle,
+              color:        "gray",
+            });
+            break;
+
+          default:
+            break;
+        }
       });
-      merge();
+
+      items.sort((a, b) => toMs(b.rawTimestamp) - toMs(a.rawTimestamp));
+      setRecentActivity(items.slice(0, 5));
+      setLoadingActivity(false);
     });
 
     return () => {
-      unsubWaste();
       unsubTrans();
-      unsubRedeem();
     };
   }, [currentUserId]);
 
@@ -938,9 +958,19 @@ export default function Dashboard() {
                             {formatRelativeTime(activity.timestamp)}
                           </p>
                         </div>
-                        <span className={`text-sm font-bold ${activity.points > 0 ? 'text-emerald-500' : 'text-red-500'}`}>
-                          {activity.points > 0 ? '+' : ''}{activity.points}
-                        </span>
+                        {activity.type === "submission_rejected" || activity.type === "submission_cancelled" ? (
+                          <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${
+                            activity.type === "submission_rejected"
+                              ? (isDark ? "bg-red-900/40 text-red-400" : "bg-red-100 text-red-600")
+                              : (isDark ? "bg-gray-700 text-gray-400" : "bg-gray-100 text-gray-500")
+                          }`}>
+                            {activity.type === "submission_rejected" ? "Rejected" : "Cancelled"}
+                          </span>
+                        ) : (
+                          <span className={`text-sm font-bold ${activity.points > 0 ? 'text-emerald-500' : 'text-red-500'}`}>
+                            {activity.points > 0 ? '+' : ''}{activity.points}
+                          </span>
+                        )}
                       </div>
                     ))}
                   </div>
