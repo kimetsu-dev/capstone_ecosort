@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Ecosort</string>
+    <string name="title_activity_main">Ecosort</string>
+    <string name="package_name">app.web.ecosort_51471</string>
+    <string name="custom_url_scheme">app.web.ecosort_51471</string>
+</resources>
